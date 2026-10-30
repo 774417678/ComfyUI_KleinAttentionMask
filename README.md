@@ -56,7 +56,7 @@ git clone https://github.com/774417678/ComfyUI_KleinAttentionMask.git
 
 > ⚠️ `sparse_neutral` 及其余中性模式**必须连接 `clip` 输入**（中性指令要经文本编码器编码）。`source_latent` 和 `adjacent_prediction` 两个零开销模式不需要 CLIP。
 
-可直接导入 [`workflows/03_full_example_self_mask.json`](workflows/03_full_example_self_mask.json)。该工作流的 `LoadImage` 指向 `example_input.png`，请先把 [`images/example_input.png`](images/example_input.png) 复制到 ComfyUI 的 `input/` 目录。模型名请改成你自己的 Klein 9B 权重（模板中为占位名 `klein9b/your_klein_9b.safetensors`），尺寸为 896×1152。
+可直接导入 [`workflows/03_example_self_mask.json`](workflows/03_example_self_mask.json)。该工作流的 `LoadImage` 指向 `example_input.png`，请先把 [`images/example_input.png`](images/example_input.png) 复制到 ComfyUI 的 `input/` 目录。模型名请改成你自己的 Klein 9B 权重（模板中为占位名 `klein9b/your_klein_9b.safetensors`），尺寸为 896×1152。
 
 ---
 
