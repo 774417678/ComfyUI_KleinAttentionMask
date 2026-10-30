@@ -193,7 +193,7 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 |---|---|
 | [`workflows/01_recommended_sparse_neutral.json`](workflows/01_recommended_sparse_neutral.json) | 推荐配置，五输入采样器 + 掩码/结果/合成三路输出 |
 | [`workflows/02_compare_all_modes.json`](workflows/02_compare_all_modes.json) | 一次采样输出五组掩码与热图，用于对比调参 |
-| [`workflows/03_full_example_self_mask.json`](workflows/03_full_example_self_mask.json) | 完整实战示例（原 `klein自遮罩示例工作流`）：自动分辨率 + 原生 `ReferenceLatent` 条件 + 热图二次阈值 + 模糊合成 + 三联对比 |
+| [`workflows/03_example_self_mask.json`](workflows/03_example_self_mask.json) | 完整实战示例（原 `klein自遮罩示例工作流`）：自动分辨率 + 原生 `ReferenceLatent` 条件 + 热图二次阈值 + 模糊合成 + 三联对比 |
 
 ### 工作流 03 说明
 
@@ -300,7 +300,7 @@ ComfyUI_KleinAttentionMask/
 ├── workflows/
 │   ├── 01_recommended_sparse_neutral.json
 │   ├── 02_compare_all_modes.json
-│   └── 03_full_example_self_mask.json
+│   └── 03_example_self_mask.json
 └── images/
     ├── example_input.png       工作流所需输入图（896×1152）
     ├── demo_overview.png       三联演示图
