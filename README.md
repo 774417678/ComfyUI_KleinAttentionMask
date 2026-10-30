@@ -193,8 +193,32 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 |---|---|
 | [`workflows/01_recommended_sparse_neutral.json`](workflows/01_recommended_sparse_neutral.json) | 推荐配置，五输入采样器 + 掩码/结果/合成三路输出 |
 | [`workflows/02_compare_all_modes.json`](workflows/02_compare_all_modes.json) | 一次采样输出五组掩码与热图，用于对比调参 |
+| [`workflows/03_full_example_self_mask.json`](workflows/03_full_example_self_mask.json) | 完整实战示例（原 `klein自遮罩示例工作流`）：自动分辨率 + 原生 `ReferenceLatent` 条件 + 热图二次阈值 + 模糊合成 + 三联对比 |
 
-两个工作流的 `LoadImage` 都指向 `example_input.png`，使用前请把 [`images/example_input.png`](images/example_input.png) 放进 ComfyUI `input/` 目录，并把 `UNETLoader` 改成你的 Klein 9B 权重。编辑指令写在 `PainterFluxImageEdit` 的 `prompt` 中，示例为「Change the hair to blue. Keep everything else unchanged.」。
+### 工作流 03 说明
+
+功能更完整的实战图，与 01 的区别：
+
+- **条件路径**用原生 `CLIPTextEncode → ReferenceLatent`（配 `ConditioningZeroOut` 做负向），不依赖 `PainterFluxImageEdit`；
+- **分辨率自适应**：`easy imageSize` + `ComfyMathExpression` 按面积把任意原图缩放到约 1MP；
+- **掩码消费方式不同**：不直接用 `edit_mask`，而取 `influence_heatmap`（第 4 个输出 `out3`）→ `ThresholdMask 0.06` → `GrowMask 15` → 高斯模糊 → `ImageCompositeMasked`。热图是连续值，低阈值 + 大扩张适合边缘柔和的头发/布料；
+- `LoraLoaderModelOnly` 挂编辑一致性 LoRA，**已置为旁路模式**：没有该 LoRA 也能跑，需要时右键启用并换成自己的权重；
+- 用 rgthree 的 `Set/Get Node` 做连线复用，`Image Comparer` 做前后对比。
+
+**额外依赖插件**（01/02 不需要）：
+
+| 插件 | 用到的节点 |
+|---|---|
+| [rgthree-comfy](https://github.com/rgthree/rgthree-comfy) | `SetNode` / `GetNode` / `Image Comparer` / `Any Switch` |
+| [ComfyUI-Easy-Use](https://github.com/yolain/ComfyUI-Easy-Use) | `easy imageSize` |
+| [ComfyUI_LayerStyle](https://github.com/chflame163/ComfyUI_LayerStyle) | `LayerFilter: GaussianBlur` / `LayerMask: MaskPreview` |
+| [ComfyUI-LogicUtils](https://github.com/aria1th/ComfyUI-LogicUtils) | `MaxNode` |
+
+> `SetNode` / `GetNode` / `Image Comparer` / `Any Switch` / `Note` 属**前端虚拟节点**，不会出现在 `/object_info`，查不到是正常的。
+
+该图默认 `sparse_neutral` + `capture_start=0` + `capture_end=1` + `probe_steps=1`。KV 权重（`flux-2-klein-9b-kv-fp8`）与非 KV 权重均实测可用。
+
+01/02 两个工作流的 `LoadImage` 指向 `example_input.png`，使用前请把 [`images/example_input.png`](images/example_input.png) 放进 ComfyUI `input/` 目录，并把 `UNETLoader` 改成你的 Klein 9B 权重。编辑指令写在 `PainterFluxImageEdit` 的 `prompt` 中，示例为「Change the hair to blue. Keep everything else unchanged.」。
 
 掩码的典型用法：`ImageCompositeMasked`，destination = 原图，source = 编辑结果，mask = `edit_mask`。白色区域采用编辑结果，黑色保留原图。
 
@@ -209,7 +233,7 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 - FLUX.2 [klein] 9B（`moodyDesireMixFlux2_v30_pruned_fp8`，FP8，896×1152）
 - 编码器 Qwen3-8B fp8mixed + `flux2-vae`
 
-**已验证**：五种模式、batch=2 张量维度、CFG 正负分支乱序、`noise_mask` 传递、原生采样输出不被修改、四种采样器接口真实跑通、两个发布工作流端到端跑通（含「头发改蓝」示例）。
+**已验证**：五种模式、batch=2 张量维度、CFG 正负分支乱序、`noise_mask` 传递、原生采样输出不被修改、四种采样器接口真实跑通、三个发布工作流端到端跑通（含「头发改蓝」示例），KV 与非 KV 权重均可用。
 
 **未验证**：batch > 2、视频/nested latent、DualCFG 引导器、ControlNet 条件下的中性重放、多 GPU、第三方量化执行引擎。
 
@@ -255,7 +279,8 @@ ComfyUI_KleinAttentionMask/
 │   └── SAMPLER_VARIANTS_ZH.md  采样器变体详细说明
 ├── workflows/
 │   ├── 01_recommended_sparse_neutral.json
-│   └── 02_compare_all_modes.json
+│   ├── 02_compare_all_modes.json
+│   └── 03_full_example_self_mask.json
 └── images/
     ├── example_input.png       工作流所需输入图（896×1152）
     ├── demo_overview.png       三联演示图
