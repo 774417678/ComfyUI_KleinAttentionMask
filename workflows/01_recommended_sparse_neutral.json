@@ -1,6 +1,6 @@
 {
-  "last_node_id": 30,
-  "last_link_id": 22,
+  "last_node_id": 31,
+  "last_link_id": 24,
   "nodes": [
     {
       "id": 2,
@@ -56,7 +56,7 @@
           "type": "CLIP",
           "links": [
             1,
-            12
+            23
           ]
         }
       ],
@@ -387,12 +387,17 @@
         {
           "name": "clip",
           "type": "CLIP",
-          "link": 12
+          "link": null
         },
         {
           "name": "source_latent",
           "type": "LATENT",
           "link": 13
+        },
+        {
+          "name": "neutral_conditioning",
+          "type": "CONDITIONING",
+          "link": 24
         }
       ],
       "outputs": [
@@ -679,6 +684,41 @@
       "widgets_values": [
         "klein_composite"
       ]
+    },
+    {
+      "id": 31,
+      "type": "KleinNeutralConditioning",
+      "pos": [
+        -320,
+        780
+      ],
+      "size": [
+        280,
+        80
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 23
+        }
+      ],
+      "outputs": [
+        {
+          "name": "neutral_conditioning",
+          "type": "CONDITIONING",
+          "links": [
+            24
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KleinNeutralConditioning"
+      },
+      "widgets_values": []
     }
   ],
   "links": [
@@ -771,14 +811,6 @@
       "LATENT"
     ],
     [
-      12,
-      3,
-      0,
-      24,
-      5,
-      "CLIP"
-    ],
-    [
       13,
       5,
       2,
@@ -857,6 +889,22 @@
       30,
       0,
       "IMAGE"
+    ],
+    [
+      23,
+      3,
+      0,
+      31,
+      0,
+      "CLIP"
+    ],
+    [
+      24,
+      31,
+      0,
+      24,
+      7,
+      "CONDITIONING"
     ]
   ],
   "groups": [],

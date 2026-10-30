@@ -23,7 +23,8 @@ edit_mask, influence_heatmap, diagnostics, comparison_masks, comparison_heatmaps
 
 | 输入 | 说明 |
 |---|---|
-| `clip` | `fixed_neutral` / `sparse_neutral` / `dense_neutral` / `compare_all` **必须接**；`source_latent` / `adjacent_prediction` 不需要 |
+| `neutral_conditioning` | 中性模式首选：连接 `KleinNeutralConditioning` 或核心 `CLIPTextEncode` 编码固定句 `Keep the image unchanged.` 的输出。优先于 `clip`，采样器内部不再调用文本编码器 |
+| `clip` | 旧图兼容入口；只在未提供中性条件时内部编码，可能抬高峰值。新图请使用准备节点；`source_latent` / `adjacent_prediction` 不触碰这两项输入 |
 | `source_latent` | 干净原图 latent。默认以 `latent_image["samples"]` 为基准；**续采的带噪 latent 必须显式提供** |
 | `mode` | 见 README「模式」一节 |
 | `threshold` / `grow` / `feather` / `probe_steps` | 见 README「参数详解」 |
@@ -49,6 +50,7 @@ Heun、`dpmpp_2m`、ER-SDE 等算法会在一个 sigma 区间内多次调用模�
 
 ## 显存与生命周期
 
+- 中性条件推荐通过 `KleinNeutralConditioning` 准备节点缓存；它先复制完整条件到 CPU，再通过核心 `unload_model_and_clones(..., unload_additional_models=False)` 只释放该文本编码器及其克隆的 GPU 驻留，不清执行缓存、不卸载其它模型。调度、hooks、多条条件和未实现的 metadata 会明确拒绝。旧 `clip` fallback 保留原行为，不自动应用这项首次运行优化。
 - 2026-10-31 修复：高级采样器只克隆一次，上游 guider 的 options 独立复制；四种接口均在成功、异常、取消路径执行 `Recorder.close()`，解除包装器和临时模型之间的引用环。无需通过清空执行缓存释放权重。
 - 普通“卸载模型”对应 `POST /free` 的 `{"unload_models": true}`；“同时清执行缓存”还会加 `"free_memory": true`。检查卸载问题时先测前者，否则可能掩盖模型跟踪丢失。
 - 中性文本按照原生 Flux2 约定左侧补零到至少 512 token；不带自定义 transformer 补丁时，CFG 重放只计算正向条件块。存在自定义 transformer 补丁时保留整包重放，避免猜测补丁的 batch 语义。

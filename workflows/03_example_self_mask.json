@@ -1,8 +1,8 @@
 {
   "id": "d5b5895c-9440-4ff8-8d03-16b3a16c78fc",
   "revision": 0,
-  "last_node_id": 92,
-  "last_link_id": 150,
+  "last_node_id": 93,
+  "last_link_id": 152,
   "nodes": [
     {
       "id": 37,
@@ -1095,7 +1095,7 @@
           "type": "CLIP",
           "links": [
             86,
-            129
+            151
           ]
         }
       ],
@@ -1330,7 +1330,7 @@
           "name": "clip",
           "shape": 7,
           "type": "CLIP",
-          "link": 129
+          "link": null
         },
         {
           "localized_name": "source_latent",
@@ -1408,6 +1408,11 @@
             "name": "capture_end"
           },
           "link": null
+        },
+        {
+          "name": "neutral_conditioning",
+          "type": "CONDITIONING",
+          "link": 152
         }
       ],
       "outputs": [
@@ -3189,6 +3194,41 @@
       "widgets_values": [
         "Klein 自遮罩完整示例\n\n依赖插件：\n- rgthree-comfy (Set/Get, Image Comparer, Any Switch)\n- ComfyUI-Easy-Use (easy imageSize)\n- ComfyUI_LayerStyle (GaussianBlur, MaskPreview)\n- ComfyUI-LogicUtils (MaxNode)\n- ComfyUI_KleinAttentionMask\n\n需替换：\n- UNETLoader 选你的 Klein 9B 权重\n- LoraLoaderModelOnly 已旁路，可选接回\n- LoadImage 放 example_input.png 到 input/\n\n链路：热图(out3) -> 阈值0.06 -> 扩张15 -> 模糊 -> 合成"
       ]
+    },
+    {
+      "id": 93,
+      "type": "KleinNeutralConditioning",
+      "pos": [
+        1370,
+        -1350
+      ],
+      "size": [
+        280,
+        80
+      ],
+      "flags": {},
+      "order": 46,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 151
+        }
+      ],
+      "outputs": [
+        {
+          "name": "neutral_conditioning",
+          "type": "CONDITIONING",
+          "links": [
+            152
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KleinNeutralConditioning"
+      },
+      "widgets_values": []
     }
   ],
   "links": [
@@ -3489,14 +3529,6 @@
       "IMAGE"
     ],
     [
-      129,
-      54,
-      0,
-      61,
-      5,
-      "CLIP"
-    ],
-    [
       130,
       61,
       3,
@@ -3695,6 +3727,22 @@
       69,
       1,
       "INT"
+    ],
+    [
+      151,
+      54,
+      0,
+      93,
+      0,
+      "CLIP"
+    ],
+    [
+      152,
+      93,
+      0,
+      61,
+      14,
+      "CONDITIONING"
     ]
   ],
   "groups": [

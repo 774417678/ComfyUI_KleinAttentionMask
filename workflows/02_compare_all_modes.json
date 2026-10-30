@@ -1,6 +1,6 @@
 {
-  "last_node_id": 34,
-  "last_link_id": 17,
+  "last_node_id": 35,
+  "last_link_id": 19,
   "nodes": [
     {
       "id": 2,
@@ -56,7 +56,7 @@
           "type": "CLIP",
           "links": [
             1,
-            12
+            18
           ]
         }
       ],
@@ -385,12 +385,17 @@
         {
           "name": "clip",
           "type": "CLIP",
-          "link": 12
+          "link": null
         },
         {
           "name": "source_latent",
           "type": "LATENT",
           "link": 13
+        },
+        {
+          "name": "neutral_conditioning",
+          "type": "CONDITIONING",
+          "link": 19
         }
       ],
       "outputs": [
@@ -417,21 +422,21 @@
         {
           "name": "diagnostics",
           "type": "STRING",
-          "links": [
-            14
-          ]
+          "links": []
         },
         {
           "name": "comparison_masks",
           "type": "MASK",
           "links": [
-            16
+            14
           ]
         },
         {
           "name": "comparison_heatmaps",
           "type": "MASK",
-          "links": []
+          "links": [
+            16
+          ]
         }
       ],
       "properties": {
@@ -586,6 +591,41 @@
       "widgets_values": [
         "klein_all_heats"
       ]
+    },
+    {
+      "id": 35,
+      "type": "KleinNeutralConditioning",
+      "pos": [
+        -320,
+        780
+      ],
+      "size": [
+        280,
+        80
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 18
+        }
+      ],
+      "outputs": [
+        {
+          "name": "neutral_conditioning",
+          "type": "CONDITIONING",
+          "links": [
+            19
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KleinNeutralConditioning"
+      },
+      "widgets_values": []
     }
   ],
   "links": [
@@ -678,14 +718,6 @@
       "LATENT"
     ],
     [
-      12,
-      3,
-      0,
-      24,
-      5,
-      "CLIP"
-    ],
-    [
       13,
       5,
       2,
@@ -696,7 +728,7 @@
     [
       14,
       24,
-      4,
+      5,
       31,
       0,
       "MASK"
@@ -712,7 +744,7 @@
     [
       16,
       24,
-      5,
+      6,
       33,
       0,
       "MASK"
@@ -724,6 +756,22 @@
       34,
       0,
       "IMAGE"
+    ],
+    [
+      18,
+      3,
+      0,
+      35,
+      0,
+      "CLIP"
+    ],
+    [
+      19,
+      35,
+      0,
+      24,
+      7,
+      "CONDITIONING"
     ]
   ],
   "groups": [],

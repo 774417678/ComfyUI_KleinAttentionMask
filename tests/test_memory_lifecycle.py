@@ -50,8 +50,11 @@ class FakeCFG:
 class Guider_Basic(FakeCFG):pass
 
 class FakeClip:
+    patcher=types.SimpleNamespace(forced_hooks=None)
+    apply_hooks_to_conds=None
+    use_clip_schedule=False
     def tokenize(self,text):return text
-    def encode_from_tokens_scheduled(self,tokens):return [[torch.ones(1,7,12),{}]]
+    def encode_from_tokens_scheduled(self,tokens):return [[torch.ones(1,7,12288),{}]]
 
 class FakeNodeSampler:
     @classmethod
@@ -90,7 +93,7 @@ class MemoryLifecycle(unittest.TestCase):
         self.assertEqual(self.model.clones,[])
     def test_neutral_and_captures_are_cpu(self):
         with self.recorder(mode='sparse_neutral',clip=FakeClip()) as rec:
-            self.assertEqual(rec.neutral.shape,(1,512,12));self.assertTrue(torch.equal(rec.neutral[:,:505],torch.zeros(1,505,12)))
+            self.assertEqual(rec.neutral.shape,(1,512,12288));self.assertTrue(torch.equal(rec.neutral[:,:505],torch.zeros(1,505,12288)))
             x=torch.randn(2,4,3,5)
             calls=[]
             def apply(x,t,**c):calls.append(c);return x+c['c_crossattn'].mean()
@@ -99,6 +102,25 @@ class MemoryLifecycle(unittest.TestCase):
             self.assertEqual(rec.caps['sparse_neutral'][0].device.type,'cpu')
             result=rec.finish();self.assertEqual(result[0].shape,(2,48,80))
         self.assertEqual(rec.caps,{})
+    def test_prepared_neutral_skips_clip_and_releases_owned_copy(self):
+        conditioning=[[torch.ones(1,7,12288),{}]]
+        class ExplodingClip:
+            def tokenize(self,text):raise AssertionError('Prepared input must not touch CLIP')
+        with self.recorder(mode='sparse_neutral',neutral_conditioning=conditioning,clip=ExplodingClip()) as rec:
+            self.assertEqual(rec.neutral_source,'conditioning')
+            self.assertNotIn('neutral_conditioning',rec.kw)
+            rec.neutral.zero_()
+            self.assertTrue(torch.equal(conditioning[0][0],torch.ones(1,7,12288)))
+        self.assertIsNone(rec.neutral)
+    def test_fast_modes_ignore_clip_and_neutral_inputs(self):
+        with self.recorder(mode='source_latent',clip=object(),neutral_conditioning=object()) as rec:
+            self.assertIsNone(rec.neutral)
+            self.assertEqual(rec.neutral_source,'unused')
+    def test_optional_contract_keeps_existing_order(self):
+        expected=['mode','threshold','grow','feather','probe_steps','capture_start','capture_end','clip','source_latent','neutral_conditioning']
+        self.assertEqual(list(mod.options()),expected)
+        for cls in (mod.KleinMaskSamplerCustomAdvanced,mod.KleinMaskSamplerCustom,mod.KleinMaskKSampler,mod.KleinMaskKSamplerAdvanced):
+            self.assertEqual(cls.INPUT_TYPES()['optional']['neutral_conditioning'],('CONDITIONING',))
     def test_positive_replay_keeps_samples_and_reference_blocks_aligned(self):
         x=torch.arange(4*4*3*5).reshape(4,4,3,5).float();t=torch.tensor([9.,9.,8.,8.]);ref=x+10
         args={'input':x,'timestep':t,'cond_or_uncond':[1,0],'c':{'c_crossattn':torch.zeros(4,512,12),'guidance':torch.arange(4.),'ref_latents':[ref],'ref_latents_method':'index_timestep_zero','transformer_options':{'cond_or_uncond':[1,0],'uuids':['neg','pos'],'sigmas':torch.ones(2)}}}

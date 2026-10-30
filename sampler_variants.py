@@ -9,6 +9,7 @@ import comfy.samplers
 from comfy_extras.nodes_custom_sampler import SamplerCustomAdvanced, SamplerCustom, Guider_Basic
 from comfy.model_patcher import create_model_options_clone
 from .internal_sampler import MODES, METRICS, rms, make_heat, pick_steps
+from .neutral_conditioning import neutral_embedding, encode_neutral_conditioning
 
 MASK_TYPES=('MASK','MASK','STRING','MASK','MASK')
 MASK_NAMES=('edit_mask','influence_heatmap','diagnostics','comparison_masks','comparison_heatmaps')
@@ -23,6 +24,7 @@ def options():
         'capture_end':('INT',{'default':-1,'min':-1,'max':10000}),
         'clip':('CLIP',),
         'source_latent':('LATENT',),
+        'neutral_conditioning':('CONDITIONING',),
     }
 
 def positive_replay_args(args,neutral):
@@ -71,7 +73,7 @@ class Recorder:
         if opts.get('sampler_calc_cond_batch_function'):
             raise ValueError('Custom conditioning executor is unsupported.')
         # Keep scalar settings, not CLIP/LATENT objects, in the recorder's metadata.
-        self.kw={k:v for k,v in kw.items() if k not in ('clip','source_latent')}
+        self.kw={k:v for k,v in kw.items() if k not in ('clip','source_latent','neutral_conditioning')}
         self.mode=kw.get('mode','source_latent')
         if self.mode not in MODES:raise ValueError('Unknown mask mode: '+self.mode)
         self.active=METRICS if self.mode=='compare_all' else [self.mode]
@@ -87,15 +89,21 @@ class Recorder:
         if self.end<self.start: raise ValueError('capture_end < capture_start')
         sparse_end=max(total-1,self.start) if requested_end<0 else self.end
         self.sparse=pick_steps(self.start,sparse_end,kw.get('probe_steps',2))
-        self.neutral=None
+        self.neutral=None;self.neutral_source='unused'
         if set(self.active)&{'fixed_neutral','sparse_neutral','dense_neutral'}:
-            clip=kw.get('clip')
-            if clip is None: raise ValueError('Connect optional CLIP for neutral/compare_all modes; fast modes do not require CLIP.')
-            self.neutral=clip.encode_from_tokens_scheduled(clip.tokenize('Keep the image unchanged.'))[0][0].detach().cpu()
-            # Match native Flux2.extra_conds: left-pad the text context to 512.
-            # Calling apply_model directly bypasses this normal preparation step.
-            if self.neutral.shape[1]<512:
-                self.neutral=F.pad(self.neutral,(0,0,512-self.neutral.shape[1],0))
+            neutral=kw.get('neutral_conditioning')
+            if neutral is not None:
+                self.neutral=neutral_embedding(neutral)
+                self.neutral_source='conditioning'
+            else:
+                clip=kw.get('clip')
+                if clip is None:
+                    raise ValueError('Connect KleinNeutralConditioning output to neutral_conditioning (recommended), or CLIP for legacy workflows.')
+                # Legacy compatibility only. A graph preparation node caches this
+                # embedding and gives core a node boundary before diffusion.
+                self.neutral=neutral_embedding(encode_neutral_conditioning(clip))
+                self.neutral_source='legacy_clip'
+                print('[KleinMaskAdapter] Legacy CLIP encoding inside sampler; connect KleinNeutralConditioning to avoid repeated text-encoder loads.')
         self.caps={m:[] for m in self.active};self.at={m:[] for m in self.active}
         self.sigmas=[];self.base_at=[];self.previous=None;self.fixed=None;self.t=time.perf_counter()
         nm=latent.get('noise_mask')
@@ -169,7 +177,7 @@ class Recorder:
                 mask=mask*nm.clamp(0,1);heat=heat*nm.clamp(0,1)
             results[m]=(mask,heat)
         selected='source_latent' if self.mode=='compare_all' else self.mode
-        info=json.dumps({'mode':self.mode,'comparison_order':self.active,'index_semantics':'positive model invocations, not scheduler steps; CFG raw positive branch, not guided result','nominal_capture_window':[self.start,self.end],'captured_calls':self.at,'positive_calls':len(self.sigmas),'extra_batched_neutral_forwards':len(self.base_at),'neutral_calls':self.base_at,'sigmas':self.sigmas,'elapsed_seconds':round(time.perf_counter()-self.t,3),'noise_mask_applied':self.noise_mask is not None,'experimental':True},ensure_ascii=False)
+        info=json.dumps({'mode':self.mode,'neutral_source':self.neutral_source,'comparison_order':self.active,'index_semantics':'positive model invocations, not scheduler steps; CFG raw positive branch, not guided result','nominal_capture_window':[self.start,self.end],'captured_calls':self.at,'positive_calls':len(self.sigmas),'extra_batched_neutral_forwards':len(self.base_at),'neutral_calls':self.base_at,'sigmas':self.sigmas,'elapsed_seconds':round(time.perf_counter()-self.t,3),'noise_mask_applied':self.noise_mask is not None,'experimental':True},ensure_ascii=False)
         print('[KleinMaskAdapter] '+info)
         return (*results[selected],info,torch.cat([results[m][0] for m in self.active]),torch.cat([results[m][1] for m in self.active]))
 

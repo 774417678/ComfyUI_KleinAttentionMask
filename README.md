@@ -54,7 +54,9 @@ git clone https://github.com/774417678/ComfyUI_KleinAttentionMask.git
 
 **这是经过实测验证的默认配置。** 只需在最前两步（噪声最大时）做两次中性配对，就能得到干净的裙子区域掩码，额外开销只有 2 次模型前向。
 
-> ⚠️ `sparse_neutral` 及其余中性模式**必须连接 `clip` 输入**（中性指令要经文本编码器编码）。`source_latent` 和 `adjacent_prediction` 两个零开销模式不需要 CLIP。
+> 中性模式推荐接线：`CLIP → Klein 中性条件准备（缓存） → 采样器 neutral_conditioning`。准备节点编码固定中性句并由 ComfyUI 缓存，完成后通过核心接口仅卸载本次文本编码器的 GPU 驻留，采样器内部不再加载它。旧 `clip` 输入保留兼容，但仍会在采样器内部重复编码，可能触发高显存峰值；迁移旧图时请断开采样器的 `clip` 线，改接准备节点。`source_latent` / `adjacent_prediction` 不需要中性条件。
+>
+> 更新插件后重启 ComfyUI，并重新打开示例工作流；已经在浏览器打开的旧图不会自动换线。首次准备中性条件仍需运行文本编码器，改变 seed/steps 后可复用其缓存。
 
 可直接导入 [`workflows/03_example_self_mask.json`](workflows/03_example_self_mask.json)。该工作流的 `LoadImage` 指向 `example_input.png`，请先把 [`images/example_input.png`](images/example_input.png) 复制到 ComfyUI 的 `input/` 目录。模型名请改成你自己的 Klein 9B 权重（模板中为占位名 `klein9b/your_klein_9b.safetensors`），尺寸为 896×1152。
 
