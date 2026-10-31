@@ -141,7 +141,7 @@ CFG 混合后的输出是 guidance 加权结果，不是模型对正向条件的
 
 | 模式 | 比较对象 | 额外前向 | 含义与适用 |
 |---|---|---:|---|
-| **`source_latent`** | 每步干净预测 ↔ `process_latent_in(原图 latent)` | **0** | "模型预测会把原图改成什么样"。最快，但包含 VAE 重建漂移和模型自发改动。适合先快速批量筛图 |
+| **`source_latent`** | 每步干净预测 ↔ 原图 latent（默认自动取编辑条件里的参考图，见 `source_reference`） | **0** | "模型预测会把原图改成什么样"。最快，包含模型复原误差；配合 `common_influence` 取多步共同区域后背景很干净，局部编辑推荐 |
 | **`fixed_neutral`** | 每步预测 ↔ 第 0 步那次中性预测 | **1** | 只算一次基准。含跨噪声状态差异，语义不纯，但开销极低 |
 | **`adjacent_prediction`** | 第 N 步预测 ↔ 第 N-1 步预测 | **0** | "哪里还在变"。已稳定下来的编辑信号会消失，后期纹理抖动反而明显。适合观察采样动态 |
 | **`sparse_neutral`** ⭐ | 选定调用的编辑预测 ↔ 同状态中性预测 | = `probe_steps` | **纯净的指令影响**。推荐默认 |
@@ -164,6 +164,8 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 | `probe_steps` | `2` | **仅 `sparse_neutral`**：在采集窗口内均匀选几个调用做中性配对 |
 | `capture_start` | `1` | 从第几次**模型调用**开始采集，0 起编号。`0` 表示含第一步 |
 | `capture_end` | `-1` | 采集到第几次调用为止；`-1` 表示到结束 |
+| `common_influence` | 关 | **共同影响**。开：每次采集先各自归一化（背景中位数→0，99.5% 分位→1），再逐点取**最小值**，只保留每次都强的区域。关：原来的平均。参与的采集就是 `capture_start`..`capture_end` 选中的调用（`sparse_neutral` 还受 `probe_steps` 限制）。开启后热图不再额外做 9px 均值模糊，`threshold` / `grow` / `feather` 照常生效 |
+| `source_reference` | `auto` | `source_latent` 模式的"原图"来源。`auto`：优先用正向条件里第一张 `ReferenceLatent`，没有时退回 `source_latent` 输入或 `latent_image`；`reference_latent`：必须使用参考图，没有就报错；`source_latent_input`：始终用 `source_latent` 输入（旧行为） |
 
 > ⚠️ **`capture_start` / `capture_end` 计的是「模型调用序号」，不是 scheduler 步号。** Heun、dpmpp_2m、ER-SDE 等算法会在一个 sigma 区间内多次调用模型，调用数会多于步数。自适应算法请填确定的 `capture_end`。`diagnostics` 输出里有真实的调用序号与 σ 列表，可据此核对。
 
@@ -172,7 +174,15 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 | 输入 | 何时需要 |
 |---|---|
 | `clip` | `fixed_neutral` / `sparse_neutral` / `dense_neutral` / `compare_all` **必须接**；`source_latent` / `adjacent_prediction` 不需要 |
-| `source_latent` | 默认以 `latent_image["samples"]` 为基准。**若输入是中途续采的带噪 latent，必须显式提供干净原图 latent**，否则基准无意义 |
+| `source_latent` | 无参考图条件时的原图基准，默认退回 `latent_image["samples"]`。**若输入是中途续采的带噪 latent，必须显式提供干净原图 latent**，并把 `source_reference` 设为 `source_latent_input` |
+
+### 局部编辑推荐：对比原图 + 共同影响
+
+`mode=source_latent`、`common_influence=开`、`capture_start=0`、`capture_end=-1`（4 步 Euler 即第 1–4 步）、`threshold=0.20`。**不需要中性条件，也没有额外前向**，耗时与原生采样相同。
+
+修复说明：旧版 `source_latent` 在示例工作流里拿 `EmptyFlux2LatentImage`（全零）作"原图"，实际比较的是"预测 vs 空 latent"，并非对比原图。现在 `auto` 会直接使用 `ReferenceLatent` 里已经过 `process_latent_in` 的参考图 latent，与预测处于同一坐标系。`diagnostics` 的 `source_origin` 会显示实际来源（`reference_latent` / `source_latent_input` / `latent_image`）。
+
+实测（2026-10-31，Klein 9B FP8 + LoRA、Euler 4 步、CFG=1、832×1248，"将衣服变成红色"）：插件输出与离线逐步数据算出的"对比原图·第 1–4 步共同 ≥0.2"掩码 IoU **0.998**，选区 11.1%，对应红色连体衣。改姿势、移动物体这类结构性编辑，模型本身会重绘大面积背景，共同影响如实反映这一点，不能把它当作噪声去掉。
 
 ---
 
@@ -240,6 +250,10 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 **未验证**：batch > 2、视频/nested latent、DualCFG 引导器、ControlNet 条件下的中性重放、多 GPU、第三方量化执行引擎。
 
 ---
+
+## 共同影响与对比原图修复（2026-10-31）
+
+新增 `common_influence` 与 `source_reference` 两个可选输入，追加在已有输入末尾，旧工作流控件顺序不变，默认值保持原行为（`common_influence` 关；`source_reference=auto` 只在存在参考图时改变 `source_latent` 的基准）。四种采样器变体共用同一实现。CPU 回归 22 + 28 项通过；GPU 实测见上文"局部编辑推荐"。
 
 ## 显存释放修复（2026-10-31）
 

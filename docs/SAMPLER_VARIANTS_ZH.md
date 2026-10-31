@@ -25,7 +25,9 @@ edit_mask, influence_heatmap, diagnostics, comparison_masks, comparison_heatmaps
 |---|---|
 | `neutral_conditioning` | 中性模式首选：连接 `KleinNeutralConditioning` 或核心 `CLIPTextEncode` 编码固定句 `Keep the image unchanged.` 的输出。优先于 `clip`，采样器内部不再调用文本编码器 |
 | `clip` | 旧图兼容入口；只在未提供中性条件时内部编码，可能抬高峰值。新图请使用准备节点；`source_latent` / `adjacent_prediction` 不触碰这两项输入 |
-| `source_latent` | 干净原图 latent。默认以 `latent_image["samples"]` 为基准；**续采的带噪 latent 必须显式提供** |
+| `source_latent` | 无参考图条件时的干净原图 latent，默认退回 `latent_image["samples"]`；**续采的带噪 latent 必须显式提供**，并设 `source_reference=source_latent_input` |
+| `common_influence` | 共同影响开关。开启后对 `capture_start`..`capture_end` 选中的每次采集分别归一化后逐点取最小值，只保留每次都强的区域；关闭为原平均 |
+| `source_reference` | `auto` / `reference_latent` / `source_latent_input`。`auto` 优先取正向条件第一张 `ReferenceLatent`（CFG 打包时按正向块切片），形状不符或没有时退回 `source_latent` 输入；`reference_latent` 缺失时报错 |
 | `mode` | 见 README「模式」一节 |
 | `threshold` / `grow` / `feather` / `probe_steps` | 见 README「参数详解」 |
 | `capture_start` / `capture_end` | **模型调用序号**，0 起编号，`-1` 表示到结束 |

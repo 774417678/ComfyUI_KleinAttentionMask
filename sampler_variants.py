@@ -11,6 +11,7 @@ from comfy.model_patcher import create_model_options_clone
 from .internal_sampler import MODES, METRICS, rms, make_heat, pick_steps
 from .neutral_conditioning import neutral_embedding, encode_neutral_conditioning
 
+SOURCE_REFERENCES=['auto','reference_latent','source_latent_input']
 MASK_TYPES=('MASK','MASK','STRING','MASK','MASK')
 MASK_NAMES=('edit_mask','influence_heatmap','diagnostics','comparison_masks','comparison_heatmaps')
 def options():
@@ -25,6 +26,9 @@ def options():
         'clip':('CLIP',),
         'source_latent':('LATENT',),
         'neutral_conditioning':('CONDITIONING',),
+        # Appended last so saved workflows keep their widget order.
+        'common_influence':('BOOLEAN',{'default':False,'label_on':'共同影响（逐点最小）','label_off':'平均','tooltip':'On: keep only positions strong in EVERY captured call (elementwise min of per-call normalized maps). The calls are exactly those selected by capture_start..capture_end (and probe_steps for sparse_neutral). Off: original average.'}),
+        'source_reference':(SOURCE_REFERENCES,{'default':'auto','tooltip':'Original image used by source_latent mode. auto: first ReferenceLatent of the positive conditioning when present, else source_latent input, else latent_image.'}),
     }
 
 def positive_replay_args(args,neutral):
@@ -80,9 +84,16 @@ class Recorder:
         dm=model.get_model_object('diffusion_model')
         if type(dm).__module__!='comfy.ldm.flux.model' or getattr(dm.params,'context_in_dim',0)!=12288:
             raise ValueError('Native Flux2 Klein9B required; third-party/KV engines not validated.')
+        self.source_reference=kw.get('source_reference','auto')
+        if self.source_reference not in SOURCE_REFERENCES:raise ValueError('Unknown source_reference: '+str(self.source_reference))
+        self.common=bool(kw.get('common_influence',False))
         src=kw.get('source_latent',latent)['samples']
         if src.is_nested or src.ndim!=4: raise ValueError('Only regular image latents [B,C,H,W] are supported, not nested/video latents.')
+        # Provisional source; for 'auto'/'reference_latent' it is replaced by the
+        # first ReferenceLatent at the first positive call (already process_latent_in'ed by core).
         self.src=model.model.process_latent_in(src.detach().cpu().clone()).float()
+        self.src_origin='source_latent_input' if 'source_latent' in kw else 'latent_image'
+        self.src_resolved=self.source_reference=='source_latent_input'
         self.start=kw.get('capture_start',1)
         requested_end=kw.get('capture_end',-1)
         self.end=1000000000 if requested_end<0 else requested_end
@@ -130,6 +141,26 @@ class Recorder:
     def __exit__(self,exc_type,exc_value,traceback):
         self.close()
         return False
+    def _resolve_source(self,args,flags,edited):
+        """Use the edit's own reference image as 'original latent'.
+
+        An empty EmptyFlux2LatentImage is zeros, so comparing against latent_image
+        is not 'vs original'. Core already applied process_latent_in to ref_latents
+        (Flux.extra_conds), which matches the prediction coordinate system.
+        """
+        self.src_resolved=True
+        refs=args['c'].get('ref_latents')
+        ref=None
+        if isinstance(refs,(list,tuple)) and refs:
+            r=refs[0]
+            if torch.is_tensor(r) and r.ndim==4:
+                rows=len(flags);pos=flags.index(0)
+                if r.shape[0]==edited.shape[0]*rows:r=r.chunk(rows)[pos]
+                if r.shape==edited.shape:ref=r
+        if ref is not None:
+            self.src=ref.detach().float().cpu().clone();self.src_origin='reference_latent'
+        elif self.source_reference=='reference_latent':
+            raise ValueError('source_reference=reference_latent, but the positive conditioning has no ReferenceLatent matching the target shape.')
     def wrap(self,apply,args):
         out=apply(args['input'],args['timestep'],**args['c'])
         flags=args.get('cond_or_uncond',[])
@@ -137,6 +168,7 @@ class Recorder:
         if flags.count(0)!=1 or out.shape[0]%len(flags): raise ValueError('Unsupported conditioning batching for internal mask collection.')
         idx=len(self.sigmas);self.sigmas.append(float(args['timestep'].flatten()[0]))
         edited=out.chunk(len(flags))[flags.index(0)]
+        if not self.src_resolved:self._resolve_source(args,flags,edited)
         if edited.shape!=self.src.shape: raise ValueError('Source latent and positive prediction shapes differ. Connect matching source_latent; regional conditioning is not supported.')
         base=None
         within=self.start<=idx<=self.end
@@ -168,7 +200,7 @@ class Recorder:
         results={}
         for m in self.active:
             if not self.caps[m]: raise ValueError('No collected predictions for '+m+'. For short/partial sampling set capture_start=0 (adjacent requires at least two calls).')
-            mask,heat=make_heat(self.caps[m],self.src.shape[-2]*16,self.src.shape[-1]*16,self.kw.get('threshold',.2),self.kw.get('grow',2),self.kw.get('feather',4))
+            mask,heat=make_heat(self.caps[m],self.src.shape[-2]*16,self.src.shape[-1]*16,self.kw.get('threshold',.2),self.kw.get('grow',2),self.kw.get('feather',4),'min' if self.common else 'mean')
             if self.noise_mask is not None:
                 nm=self.noise_mask.detach().cpu().reshape(-1,1,*self.noise_mask.shape[-2:]).float()
                 nm=F.interpolate(nm,size=mask.shape[-2:],mode='bilinear',align_corners=False)[:,0]
@@ -177,7 +209,7 @@ class Recorder:
                 mask=mask*nm.clamp(0,1);heat=heat*nm.clamp(0,1)
             results[m]=(mask,heat)
         selected='source_latent' if self.mode=='compare_all' else self.mode
-        info=json.dumps({'mode':self.mode,'neutral_source':self.neutral_source,'comparison_order':self.active,'index_semantics':'positive model invocations, not scheduler steps; CFG raw positive branch, not guided result','nominal_capture_window':[self.start,self.end],'captured_calls':self.at,'positive_calls':len(self.sigmas),'extra_batched_neutral_forwards':len(self.base_at),'neutral_calls':self.base_at,'sigmas':self.sigmas,'elapsed_seconds':round(time.perf_counter()-self.t,3),'noise_mask_applied':self.noise_mask is not None,'experimental':True},ensure_ascii=False)
+        info=json.dumps({'mode':self.mode,'combine':'common_min' if self.common else 'mean','source_reference':self.source_reference,'source_origin':self.src_origin,'neutral_source':self.neutral_source,'comparison_order':self.active,'index_semantics':'positive model invocations, not scheduler steps; CFG raw positive branch, not guided result','nominal_capture_window':[self.start,self.end],'captured_calls':self.at,'positive_calls':len(self.sigmas),'extra_batched_neutral_forwards':len(self.base_at),'neutral_calls':self.base_at,'sigmas':self.sigmas,'elapsed_seconds':round(time.perf_counter()-self.t,3),'noise_mask_applied':self.noise_mask is not None,'experimental':True},ensure_ascii=False)
         print('[KleinMaskAdapter] '+info)
         return (*results[selected],info,torch.cat([results[m][0] for m in self.active]),torch.cat([results[m][1] for m in self.active]))
 

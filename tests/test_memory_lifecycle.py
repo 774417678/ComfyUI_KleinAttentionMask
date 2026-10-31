@@ -3,6 +3,7 @@ import ast
 import copy
 import gc
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -117,10 +118,62 @@ class MemoryLifecycle(unittest.TestCase):
             self.assertIsNone(rec.neutral)
             self.assertEqual(rec.neutral_source,'unused')
     def test_optional_contract_keeps_existing_order(self):
-        expected=['mode','threshold','grow','feather','probe_steps','capture_start','capture_end','clip','source_latent','neutral_conditioning']
+        expected=['mode','threshold','grow','feather','probe_steps','capture_start','capture_end','clip','source_latent','neutral_conditioning','common_influence','source_reference']
         self.assertEqual(list(mod.options()),expected)
         for cls in (mod.KleinMaskSamplerCustomAdvanced,mod.KleinMaskSamplerCustom,mod.KleinMaskKSampler,mod.KleinMaskKSamplerAdvanced):
             self.assertEqual(cls.INPUT_TYPES()['optional']['neutral_conditioning'],('CONDITIONING',))
+    def _call(self,rec,x,ref=None,flags=(0,)):
+        c={'transformer_options':{}}
+        if ref is not None:c['ref_latents']=[ref]
+        return rec.wrap(lambda x,t,**c:x,{'input':x,'timestep':torch.ones(x.shape[0]),'c':c,'cond_or_uncond':list(flags)})
+    def test_source_auto_uses_reference_latent_not_empty_latent(self):
+        ref=torch.full((2,4,3,5),3.)
+        with self.recorder(mode='source_latent') as rec:
+            self._call(rec,torch.zeros(2,4,3,5),ref)
+            self.assertEqual(rec.src_origin,'reference_latent')
+            self.assertTrue(torch.equal(rec.src,ref))
+            self.assertTrue(torch.allclose(rec.caps['source_latent'][0],torch.full((2,3,5),3.)))
+    def test_source_auto_falls_back_without_reference(self):
+        with self.recorder(mode='source_latent') as rec:
+            self._call(rec,torch.zeros(2,4,3,5))
+            self.assertEqual(rec.src_origin,'latent_image')
+    def test_source_latent_input_choice_ignores_reference(self):
+        given={'samples':torch.full((2,4,3,5),1.)}
+        with self.recorder(mode='source_latent',source_latent=given,source_reference='source_latent_input') as rec:
+            self._call(rec,torch.zeros(2,4,3,5),torch.full((2,4,3,5),9.))
+            self.assertEqual(rec.src_origin,'source_latent_input')
+            self.assertTrue(torch.equal(rec.src,given['samples']+0.25))
+    def test_reference_choice_fails_closed_without_reference(self):
+        with self.recorder(mode='source_latent',source_reference='reference_latent') as rec:
+            with self.assertRaises(ValueError):self._call(rec,torch.zeros(2,4,3,5))
+    def test_reference_is_sliced_from_cfg_batch(self):
+        ref=torch.cat([torch.full((2,4,3,5),7.),torch.full((2,4,3,5),2.)])
+        with self.recorder(mode='source_latent') as rec:
+            self._call(rec,torch.zeros(4,4,3,5),ref,flags=(1,0))
+            self.assertTrue(torch.equal(rec.src,torch.full((2,4,3,5),2.)))
+    def test_common_influence_is_elementwise_min(self):
+        a=torch.zeros(1,4,4);b=torch.zeros(1,4,4)
+        a[0,:2]=1;b[0,1:3]=1
+        a[0,3,3]=0.5;b[0,3,3]=0.5  # keep both maps' q99.5 non-degenerate
+        _,mean=internal.make_heat([a,b],4,4,0.5,0,0,'mean')
+        _,common=internal.make_heat([a,b],4,4,0.5,0,0,'min')
+        self.assertGreater(float(common[0,1].mean()),0.9)            # strong in both
+        self.assertLess(float(common[0,0].max()),1e-6)                # only in a
+        self.assertLess(float(common[0,2].max()),1e-6)                # only in b
+        self.assertGreater(float(mean[0,0].mean()),float(common[0,0].mean()))
+        with self.assertRaises(ValueError):internal.make_heat([a],4,4,.5,0,0,'max')
+    def test_common_uses_only_capture_window(self):
+        latent={'samples':torch.zeros(1,4,3,5)}
+        with mod.Recorder(self.model,latent,4,mode='source_latent',common_influence=True,capture_start=1,capture_end=2) as rec:
+            for _ in range(4):self._call(rec,torch.zeros(1,4,3,5),torch.ones(1,4,3,5))
+            self.assertEqual(rec.at['source_latent'],[1,2])
+            self.assertEqual(json.loads(rec.finish()[2])['captured_calls']['source_latent'],[1,2])
+    def test_common_flag_reaches_finish(self):
+        with self.recorder(mode='source_latent',common_influence=True) as rec:
+            self._call(rec,torch.zeros(2,4,3,5),torch.ones(2,4,3,5))
+            self._call(rec,torch.zeros(2,4,3,5),torch.ones(2,4,3,5))
+            info=json.loads(rec.finish()[2])
+            self.assertEqual(info['combine'],'common_min');self.assertEqual(info['source_origin'],'reference_latent')
     def test_positive_replay_keeps_samples_and_reference_blocks_aligned(self):
         x=torch.arange(4*4*3*5).reshape(4,4,3,5).float();t=torch.tensor([9.,9.,8.,8.]);ref=x+10
         args={'input':x,'timestep':t,'cond_or_uncond':[1,0],'c':{'c_crossattn':torch.zeros(4,512,12),'guidance':torch.arange(4.),'ref_latents':[ref],'ref_latents_method':'index_timestep_zero','transformer_options':{'cond_or_uncond':[1,0],'uuids':['neg','pos'],'sigmas':torch.ones(2)}}}
