@@ -62,7 +62,13 @@ SamplerCustomAdvanced(掩码版) → sampling_record → KleinInfluenceMap → i
 
 **`source_latent` + 共同影响是零额外前向的组合**，采样耗时与原生一致；`fixed_neutral` 定位更稳，只多一次中性前向（第 0 次调用）。
 
-可直接导入 [`workflows/03_example_self_mask.json`](workflows/03_example_self_mask.json)。该工作流的 `LoadImage` 指向 `example_input.png`，请先把 [`images/example_input.png`](images/example_input.png) 复制到 ComfyUI 的 `input/` 目录。模型名请改成你自己的 Klein 9B 权重（模板中为占位名 `klein9b/your_klein_9b.safetensors`），尺寸为 896×1152。
+可直接导入 [`workflows/03_example_self_mask.json`](workflows/03_example_self_mask.json)（即原先的「klein自遮罩示例工作流」）。该示例：
+
+- `LoadImage` 指向 `example_input.png`，请先把 [`images/example_input.png`](images/example_input.png) 复制到 ComfyUI 的 `input/` 目录；
+- 模型名是占位名 `klein9b/your_klein_9b.safetensors`，请改成你自己的 Klein 9B 权重；一致性 LoRA 已置为**旁路**（占位名 `klein9b/your_consistency_lora.safetensors`），需要时右键启用并换成自己的文件；
+- 目标分辨率由工作流内的 `GetImageSize` + 数学节点按原图比例自动计算（默认 1024² 面积预算），不需要手填尺寸；
+- 采样器为 `fixed_neutral`、窗口 `0–1`、`probe_steps=1`，影响图开启共同影响、`source_reference=auto`；
+- 遮罩链为 `ThresholdMask → GrowMask → 高斯模糊 → ImageCompositeMasked`，与编辑结果合成后三方对比。
 
 ---
 
@@ -300,7 +306,7 @@ git clone --branch legacy-single-node https://github.com/774417678/ComfyUI_Klein
 - `LoraLoaderModelOnly` 挂编辑一致性 LoRA，**已置为旁路模式**：没有该 LoRA 也能跑，需要时右键启用并换成自己的权重；
 - 用 rgthree 的 `Set/Get Node` 做连线复用，`Image Comparer` 做前后对比。
 
-**额外依赖插件**（01/02 不需要）：
+**额外依赖插件**（01 / 02 不需要；**03 需要下表全部四项**）：
 
 | 插件 | 用到的节点 |
 |---|---|
