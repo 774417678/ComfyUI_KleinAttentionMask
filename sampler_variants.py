@@ -8,18 +8,16 @@ import nodes
 import comfy.samplers
 from comfy_extras.nodes_custom_sampler import SamplerCustomAdvanced, SamplerCustom, Guider_Basic
 from comfy.model_patcher import create_model_options_clone
-from .internal_sampler import MODES, METRICS, rms, make_heat, pick_steps
+from .internal_sampler import MODES, METRICS, rms, influence_map, pick_steps
 from .neutral_conditioning import neutral_embedding, encode_neutral_conditioning
 
 SOURCE_REFERENCES=['auto','reference_latent','source_latent_input']
-MASK_TYPES=('MASK','MASK','STRING','MASK','MASK')
-MASK_NAMES=('edit_mask','influence_heatmap','diagnostics','comparison_masks','comparison_heatmaps')
+# Influence maps only. Binarize / grow / feather with external mask nodes.
+MASK_TYPES=('MASK','STRING','MASK')
+MASK_NAMES=('influence_heatmap','diagnostics','comparison_heatmaps')
 def options():
     return {
         'mode':(MODES,{'default':'source_latent'}),
-        'threshold':('FLOAT',{'default':0.20,'min':0.01,'max':0.95,'step':0.01}),
-        'grow':('INT',{'default':2,'min':0,'max':64}),
-        'feather':('INT',{'default':4,'min':0,'max':64}),
         'probe_steps':('INT',{'default':2,'min':1,'max':100}),
         'capture_start':('INT',{'default':1,'min':0,'max':10000}),
         'capture_end':('INT',{'default':-1,'min':-1,'max':10000}),
@@ -200,18 +198,18 @@ class Recorder:
         results={}
         for m in self.active:
             if not self.caps[m]: raise ValueError('No collected predictions for '+m+'. For short/partial sampling set capture_start=0 (adjacent requires at least two calls).')
-            mask,heat=make_heat(self.caps[m],self.src.shape[-2]*16,self.src.shape[-1]*16,self.kw.get('threshold',.2),self.kw.get('grow',2),self.kw.get('feather',4),'min' if self.common else 'mean')
+            heat=influence_map(self.caps[m],self.src.shape[-2]*16,self.src.shape[-1]*16,'min' if self.common else 'mean')
             if self.noise_mask is not None:
                 nm=self.noise_mask.detach().cpu().reshape(-1,1,*self.noise_mask.shape[-2:]).float()
-                nm=F.interpolate(nm,size=mask.shape[-2:],mode='bilinear',align_corners=False)[:,0]
-                if nm.shape[0]==1:nm=nm.expand(mask.shape[0],-1,-1)
-                if nm.shape[0]!=mask.shape[0]:raise ValueError('noise_mask batch differs from source batch')
-                mask=mask*nm.clamp(0,1);heat=heat*nm.clamp(0,1)
-            results[m]=(mask,heat)
+                nm=F.interpolate(nm,size=heat.shape[-2:],mode='bilinear',align_corners=False)[:,0]
+                if nm.shape[0]==1:nm=nm.expand(heat.shape[0],-1,-1)
+                if nm.shape[0]!=heat.shape[0]:raise ValueError('noise_mask batch differs from source batch')
+                heat=heat*nm.clamp(0,1)
+            results[m]=heat
         selected='source_latent' if self.mode=='compare_all' else self.mode
         info=json.dumps({'mode':self.mode,'combine':'common_min' if self.common else 'mean','source_reference':self.source_reference,'source_origin':self.src_origin,'neutral_source':self.neutral_source,'comparison_order':self.active,'index_semantics':'positive model invocations, not scheduler steps; CFG raw positive branch, not guided result','nominal_capture_window':[self.start,self.end],'captured_calls':self.at,'positive_calls':len(self.sigmas),'extra_batched_neutral_forwards':len(self.base_at),'neutral_calls':self.base_at,'sigmas':self.sigmas,'elapsed_seconds':round(time.perf_counter()-self.t,3),'noise_mask_applied':self.noise_mask is not None,'experimental':True},ensure_ascii=False)
         print('[KleinMaskAdapter] '+info)
-        return (*results[selected],info,torch.cat([results[m][0] for m in self.active]),torch.cat([results[m][1] for m in self.active]))
+        return (results[selected],info,torch.cat([results[m] for m in self.active]))
 
 class KleinMaskSamplerCustomAdvanced:
     @classmethod

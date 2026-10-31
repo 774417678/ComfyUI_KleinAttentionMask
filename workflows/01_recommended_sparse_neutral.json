@@ -1,6 +1,6 @@
 {
-  "last_node_id": 31,
-  "last_link_id": 24,
+  "last_node_id": 34,
+  "last_link_id": 29,
   "nodes": [
     {
       "id": 2,
@@ -414,26 +414,15 @@
           "links": []
         },
         {
-          "name": "edit_mask",
-          "type": "MASK",
-          "links": [
-            14,
-            21
-          ]
-        },
-        {
           "name": "influence_heatmap",
           "type": "MASK",
-          "links": []
+          "links": [
+            25
+          ]
         },
         {
           "name": "diagnostics",
           "type": "STRING",
-          "links": []
-        },
-        {
-          "name": "comparison_masks",
-          "type": "MASK",
           "links": []
         },
         {
@@ -447,9 +436,6 @@
       },
       "widgets_values": [
         "sparse_neutral",
-        0.2,
-        2,
-        4,
         2,
         0,
         1
@@ -473,7 +459,7 @@
         {
           "name": "mask",
           "type": "MASK",
-          "link": 14
+          "link": 28
         }
       ],
       "outputs": [
@@ -629,7 +615,7 @@
         {
           "name": "mask",
           "type": "MASK",
-          "link": 21
+          "link": 29
         }
       ],
       "outputs": [
@@ -719,6 +705,122 @@
         "Node name for S&R": "KleinNeutralConditioning"
       },
       "widgets_values": []
+    },
+    {
+      "id": 32,
+      "type": "ThresholdMask",
+      "pos": [
+        360,
+        960
+      ],
+      "size": [
+        260,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 25
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            26
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ThresholdMask"
+      },
+      "widgets_values": [
+        0.2
+      ]
+    },
+    {
+      "id": 33,
+      "type": "GrowMask",
+      "pos": [
+        360,
+        1070
+      ],
+      "size": [
+        260,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 26
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            27
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GrowMask"
+      },
+      "widgets_values": [
+        2,
+        true
+      ]
+    },
+    {
+      "id": 34,
+      "type": "FeatherMask",
+      "pos": [
+        360,
+        1180
+      ],
+      "size": [
+        260,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            28,
+            29
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FeatherMask"
+      },
+      "widgets_values": [
+        4,
+        4,
+        4,
+        4
+      ]
     }
   ],
   "links": [
@@ -819,14 +921,6 @@
       "LATENT"
     ],
     [
-      14,
-      24,
-      2,
-      25,
-      0,
-      "MASK"
-    ],
-    [
       15,
       25,
       0,
@@ -875,14 +969,6 @@
       "IMAGE"
     ],
     [
-      21,
-      24,
-      2,
-      29,
-      2,
-      "MASK"
-    ],
-    [
       22,
       29,
       0,
@@ -905,6 +991,46 @@
       24,
       7,
       "CONDITIONING"
+    ],
+    [
+      25,
+      24,
+      2,
+      32,
+      0,
+      "MASK"
+    ],
+    [
+      26,
+      32,
+      0,
+      33,
+      0,
+      "MASK"
+    ],
+    [
+      27,
+      33,
+      0,
+      34,
+      0,
+      "MASK"
+    ],
+    [
+      28,
+      34,
+      0,
+      25,
+      0,
+      "MASK"
+    ],
+    [
+      29,
+      34,
+      0,
+      29,
+      2,
+      "MASK"
     ]
   ],
   "groups": [],

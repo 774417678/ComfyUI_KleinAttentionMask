@@ -48,11 +48,12 @@ git clone https://github.com/774417678/ComfyUI_KleinAttentionMask.git
 | `capture_start` | `0` |
 | `capture_end` | `1` |
 | `probe_steps` | `2` |
-| `threshold` | `0.20` |
-| `grow` | `2` |
-| `feather` | `4` |
 
-**这是经过实测验证的默认配置。** 只需在最前两步（噪声最大时）做两次中性配对，就能得到干净的裙子区域掩码，额外开销只有 2 次模型前向。
+外部遮罩：`influence_heatmap → ThresholdMask(0.20) → GrowMask(2) → FeatherMask(4)`。
+
+**这是经过实测验证的默认配置。** 只需在最前两步（噪声最大时）做两次中性配对，就能得到干净的裙子区域影响图，额外开销只有 2 次模型前向。
+
+> 采样器只输出连续 0–1 的影响图，不再在节点内二值化、扩张或羽化。遮罩请用 ComfyUI 核心的 `ThresholdMask` / `GrowMask` / `FeatherMask` 等节点在外部生成，阈值和边缘处理可随时调整而不必重新采样。
 
 > 中性模式推荐接线：`CLIP → Klein 中性条件准备（缓存） → 采样器 neutral_conditioning`。准备节点编码固定中性句并由 ComfyUI 缓存，完成后通过核心接口仅卸载本次文本编码器的 GPU 驻留，采样器内部不再加载它。旧 `clip` 输入保留兼容，但仍会在采样器内部重复编码，可能触发高显存峰值；迁移旧图时请断开采样器的 `clip` 线，改接准备节点。`source_latent` / `adjacent_prediction` 不需要中性条件。
 >
@@ -127,11 +128,13 @@ CFG 混合后的输出是 guidance 加权结果，不是模型对正向条件的
 | `KleinInternalEditMaskSampler` | 旧版单节点（内置 euler/simple/CFG=1） | 2 |
 | `KleinAttentionMaskProbe` / `KleinAttentionMaskExtract` | 注意力诊断（**遗留，不推荐**） | 0 |
 
-四个采样器变体的输出前缀为原生输出，之后固定追加 5 个 MASK 类输出：
+四个采样器变体的输出前缀为原生输出，之后固定追加 3 个输出：
 
 ```
-[原生输出...] , edit_mask , influence_heatmap , diagnostics , comparison_masks , comparison_heatmaps
+[原生输出...] , influence_heatmap , diagnostics , comparison_heatmaps
 ```
+
+`influence_heatmap` 是连续 0–1 的 MASK 类型影响图，节点内**不做**二值化、扩张或羽化。（2026-10-31 起移除了旧的 `edit_mask` / `comparison_masks` 输出与 `threshold` / `grow` / `feather` 参数，见下文"遮罩改为外部生成"。）旧版 `KleinInternalEditMaskSampler` 单节点保持原样，仍内置遮罩。
 
 ---
 
@@ -148,24 +151,33 @@ CFG 混合后的输出是 guidance 加权结果，不是模型对正向条件的
 | **`dense_neutral`** | 窗口内每步都配对 | = 窗口内步数 | 最完整，也最慢 |
 | **`compare_all`** | 以上五种同时输出 | 各模式之和 | 一次采样对比全部模式，用于调参 |
 
-`compare_all` 的前三个输出采用 `source_latent`，五组完整结果从 `comparison_masks` / `comparison_heatmaps` 读取，顺序固定为：
+`compare_all` 的 `influence_heatmap` 采用 `source_latent`，五组完整影响图从 `comparison_heatmaps` 按 batch 读取，顺序固定为：
 
 ```
 source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → dense_neutral
 ```
 
-### 采样与掩码参数
+### 采样参数
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `threshold` | `0.20` | 热图二值化阈值。热图已归一化到约 0~1，**这是绝对阈值，不是"取最亮的百分之几"**。**调大→选区缩小；调小→选区扩大** |
-| `grow` | `2` | 二值掩码向外扩张半径（最终图像像素）。补边用；过大会吃周边 |
-| `feather` | `4` | 边缘羽化半径（最终图像像素）。让 `ImageCompositeMasked` 贴回时过渡自然 |
 | `probe_steps` | `2` | **仅 `sparse_neutral`**：在采集窗口内均匀选几个调用做中性配对 |
 | `capture_start` | `1` | 从第几次**模型调用**开始采集，0 起编号。`0` 表示含第一步 |
 | `capture_end` | `-1` | 采集到第几次调用为止；`-1` 表示到结束 |
-| `common_influence` | 关 | **共同影响**。开：每次采集先各自归一化（背景中位数→0，99.5% 分位→1），再逐点取**最小值**，只保留每次都强的区域。关：原来的平均。参与的采集就是 `capture_start`..`capture_end` 选中的调用（`sparse_neutral` 还受 `probe_steps` 限制）。开启后热图不再额外做 9px 均值模糊，`threshold` / `grow` / `feather` 照常生效 |
+| `common_influence` | 关 | **共同影响**。开：每次采集先各自归一化（背景中位数→0，99.5% 分位→1），再逐点取**最小值**，只保留每次都强的区域。关：原来的平均。参与的采集就是 `capture_start`..`capture_end` 选中的调用（`sparse_neutral` 还受 `probe_steps` 限制）。开启后热图不再额外做 9px 均值模糊 |
 | `source_reference` | `auto` | `source_latent` 模式的"原图"来源。`auto`：优先用正向条件里第一张 `ReferenceLatent`，没有时退回 `source_latent` 输入或 `latent_image`；`reference_latent`：必须使用参考图，没有就报错；`source_latent_input`：始终用 `source_latent` 输入（旧行为） |
+
+### 遮罩改为外部生成
+
+影响图已归一化到约 0–1（每次采集背景中位数→0、99.5% 分位→1），外部阈值是**绝对值，不是"取最亮的百分之几"**，调大选区缩小、调小选区扩大。旧参数对应的核心节点：
+
+| 旧参数 | 外部节点 |
+|---|---|
+| `threshold` | `ThresholdMask`（value，严格大于；旧版为大于等于，连续影响图上实测像素级一致） |
+| `grow` | `GrowMask`（expand） |
+| `feather` | `FeatherMask`（四边设同一值） |
+
+示例工作流已按旧参数自动换接成上述链路，下游合成节点保持连接。
 
 > ⚠️ **`capture_start` / `capture_end` 计的是「模型调用序号」，不是 scheduler 步号。** Heun、dpmpp_2m、ER-SDE 等算法会在一个 sigma 区间内多次调用模型，调用数会多于步数。自适应算法请填确定的 `capture_end`。`diagnostics` 输出里有真实的调用序号与 σ 列表，可据此核对。
 
@@ -178,11 +190,11 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 
 ### 局部编辑推荐：对比原图 + 共同影响
 
-`mode=source_latent`、`common_influence=开`、`capture_start=0`、`capture_end=-1`（4 步 Euler 即第 1–4 步）、`threshold=0.20`。**不需要中性条件，也没有额外前向**，耗时与原生采样相同。
+`mode=source_latent`、`common_influence=开`、`capture_start=0`、`capture_end=-1`（4 步 Euler 即第 1–4 步），外部 `ThresholdMask(0.20)`。**不需要中性条件，也没有额外前向**，耗时与原生采样相同。
 
 修复说明：旧版 `source_latent` 在示例工作流里拿 `EmptyFlux2LatentImage`（全零）作"原图"，实际比较的是"预测 vs 空 latent"，并非对比原图。现在 `auto` 会直接使用 `ReferenceLatent` 里已经过 `process_latent_in` 的参考图 latent，与预测处于同一坐标系。`diagnostics` 的 `source_origin` 会显示实际来源（`reference_latent` / `source_latent_input` / `latent_image`）。
 
-实测（2026-10-31，Klein 9B FP8 + LoRA、Euler 4 步、CFG=1、832×1248，"将衣服变成红色"）：插件输出与离线逐步数据算出的"对比原图·第 1–4 步共同 ≥0.2"掩码 IoU **0.998**，选区 11.1%，对应红色连体衣。改姿势、移动物体这类结构性编辑，模型本身会重绘大面积背景，共同影响如实反映这一点，不能把它当作噪声去掉。
+实测（2026-10-31，Klein 9B FP8 + LoRA、Euler 4 步、CFG=1、832×1248，"将衣服变成红色"）：插件影响图经外部 `ThresholdMask(0.2)` 得到的遮罩与离线逐步数据算出的"对比原图·第 1–4 步共同 ≥0.2"掩码 IoU **0.998**，选区 11.1%，对应红色连体衣；与移除内置遮罩前的插件输出逐像素一致，影响图本身也逐像素不变。改姿势、移动物体这类结构性编辑，模型本身会重绘大面积背景，共同影响如实反映这一点，不能把它当作噪声去掉。
 
 ---
 
@@ -213,7 +225,7 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 
 - **条件路径**用原生 `CLIPTextEncode → ReferenceLatent`（配 `ConditioningZeroOut` 做负向），不依赖 `PainterFluxImageEdit`；
 - **分辨率自适应**：`easy imageSize` + `ComfyMathExpression` 按面积把任意原图缩放到约 1MP；
-- **掩码消费方式不同**：不直接用 `edit_mask`，而取 `influence_heatmap`（第 4 个输出 `out3`）→ `ThresholdMask 0.06` → `GrowMask 15` → 高斯模糊 → `ImageCompositeMasked`。热图是连续值，低阈值 + 大扩张适合边缘柔和的头发/布料；
+- **外部遮罩链路**：`influence_heatmap`（第 3 个输出 `out2`）→ `ThresholdMask 0.06` → `GrowMask 15` → 高斯模糊 → `ImageCompositeMasked`。热图是连续值，低阈值 + 大扩张适合边缘柔和的头发/布料；
 - `LoraLoaderModelOnly` 挂编辑一致性 LoRA，**已置为旁路模式**：没有该 LoRA 也能跑，需要时右键启用并换成自己的权重；
 - 用 rgthree 的 `Set/Get Node` 做连线复用，`Image Comparer` 做前后对比。
 
@@ -232,7 +244,7 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 
 01/02 两个工作流的 `LoadImage` 指向 `example_input.png`，使用前请把 [`images/example_input.png`](images/example_input.png) 放进 ComfyUI `input/` 目录，并把 `UNETLoader` 改成你的 Klein 9B 权重。编辑指令写在 `PainterFluxImageEdit` 的 `prompt` 中，示例为「Change the hair to blue. Keep everything else unchanged.」。
 
-掩码的典型用法：`ImageCompositeMasked`，destination = 原图，source = 编辑结果，mask = `edit_mask`。白色区域采用编辑结果，黑色保留原图。
+掩码的典型用法：`ImageCompositeMasked`，destination = 原图，source = 编辑结果，mask = 外部 `ThresholdMask` / `GrowMask` / `FeatherMask` 处理后的影响图。白色区域采用编辑结果，黑色保留原图。
 
 **注意**：掩码是在采样**之后**输出的，用于合成；它不会反过来约束刚才那次采样。若要让掩码局部二次重绘，请把它接到下一遍 inpaint。
 

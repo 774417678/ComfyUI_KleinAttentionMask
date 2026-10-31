@@ -11,13 +11,15 @@
 | `KleinMaskKSampler` | 标准 KSampler（含 `denoise`） | `samples` |
 | `KleinMaskKSamplerAdvanced` | KSamplerAdvanced（加噪开关、起止步、保留剩余噪声） | `samples` |
 
-之后固定追加 5 个输出：
+之后固定追加 3 个输出：
 
 ```
-edit_mask, influence_heatmap, diagnostics, comparison_masks, comparison_heatmaps
+influence_heatmap, diagnostics, comparison_heatmaps
 ```
 
-采样完全委托当前 ComfyUI 原生节点执行，噪声生成、seed、sigma、`noise_mask`、预览 callback、x0 输出、`downscale_ratio_spacial/temporal` 均由原生路径处理。掩码额外乘以输入 `noise_mask`，避免在不可重绘区域给出建议。
+`influence_heatmap` 为连续 0–1 影响图，节点内不做二值化、扩张或羽化，遮罩用核心 `ThresholdMask` / `GrowMask` / `FeatherMask` 在外部生成。`compare_all` 时 `comparison_heatmaps` 按 batch 依次放五种模式的影响图。
+
+采样完全委托当前 ComfyUI 原生节点执行，噪声生成、seed、sigma、`noise_mask`、预览 callback、x0 输出、`downscale_ratio_spacial/temporal` 均由原生路径处理。影响图额外乘以输入 `noise_mask`，避免在不可重绘区域给出建议。
 
 ## 可选输入
 
@@ -29,7 +31,7 @@ edit_mask, influence_heatmap, diagnostics, comparison_masks, comparison_heatmaps
 | `common_influence` | 共同影响开关。开启后对 `capture_start`..`capture_end` 选中的每次采集分别归一化后逐点取最小值，只保留每次都强的区域；关闭为原平均 |
 | `source_reference` | `auto` / `reference_latent` / `source_latent_input`。`auto` 优先取正向条件第一张 `ReferenceLatent`（CFG 打包时按正向块切片），形状不符或没有时退回 `source_latent` 输入；`reference_latent` 缺失时报错 |
 | `mode` | 见 README「模式」一节 |
-| `threshold` / `grow` / `feather` / `probe_steps` | 见 README「参数详解」 |
+| `probe_steps` | 见 README「参数详解」 |
 | `capture_start` / `capture_end` | **模型调用序号**，0 起编号，`-1` 表示到结束 |
 
 ## 调用序号 ≠ 步号

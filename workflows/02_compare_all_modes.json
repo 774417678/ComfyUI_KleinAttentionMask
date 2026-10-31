@@ -1,6 +1,6 @@
 {
-  "last_node_id": 35,
-  "last_link_id": 19,
+  "last_node_id": 36,
+  "last_link_id": 21,
   "nodes": [
     {
       "id": 2,
@@ -410,11 +410,6 @@
           "links": []
         },
         {
-          "name": "edit_mask",
-          "type": "MASK",
-          "links": []
-        },
-        {
           "name": "influence_heatmap",
           "type": "MASK",
           "links": []
@@ -425,17 +420,11 @@
           "links": []
         },
         {
-          "name": "comparison_masks",
-          "type": "MASK",
-          "links": [
-            14
-          ]
-        },
-        {
           "name": "comparison_heatmaps",
           "type": "MASK",
           "links": [
-            16
+            16,
+            20
           ]
         }
       ],
@@ -444,9 +433,6 @@
       },
       "widgets_values": [
         "compare_all",
-        0.2,
-        2,
-        4,
         2,
         0,
         1
@@ -470,7 +456,7 @@
         {
           "name": "mask",
           "type": "MASK",
-          "link": 14
+          "link": 21
         }
       ],
       "outputs": [
@@ -626,6 +612,43 @@
         "Node name for S&R": "KleinNeutralConditioning"
       },
       "widgets_values": []
+    },
+    {
+      "id": 36,
+      "type": "ThresholdMask",
+      "pos": [
+        360,
+        1300
+      ],
+      "size": [
+        260,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            21
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ThresholdMask"
+      },
+      "widgets_values": [
+        0.2
+      ]
     }
   ],
   "links": [
@@ -726,14 +749,6 @@
       "LATENT"
     ],
     [
-      14,
-      24,
-      5,
-      31,
-      0,
-      "MASK"
-    ],
-    [
       15,
       31,
       0,
@@ -744,7 +759,7 @@
     [
       16,
       24,
-      6,
+      4,
       33,
       0,
       "MASK"
@@ -772,6 +787,22 @@
       24,
       7,
       "CONDITIONING"
+    ],
+    [
+      20,
+      24,
+      4,
+      36,
+      0,
+      "MASK"
+    ],
+    [
+      21,
+      36,
+      0,
+      31,
+      0,
+      "MASK"
     ]
   ],
   "groups": [],

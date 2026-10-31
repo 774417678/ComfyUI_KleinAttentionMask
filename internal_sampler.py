@@ -14,11 +14,13 @@ def pick_steps(start, end, count):
 def rms(a, b):
     return (a.float()-b.float()).square().mean(1).sqrt().detach().cpu()
 
-def make_heat(captures, height, width, threshold, grow, feather, combine='mean'):
-    """combine='mean': average of per-capture normalized maps (original behaviour).
-    combine='min': common influence, i.e. keep only positions strong in EVERY capture.
-    The common map is upsampled bilinearly without the extra 9px box blur, matching
-    the validated offline maps; grow/feather still apply afterwards."""
+def influence_map(captures, height, width, combine='mean'):
+    """Continuous 0..1 influence map; no binarization.
+
+    combine='mean': average of per-capture normalized maps, then 9px box blur (original).
+    combine='min': common influence, i.e. keep only positions strong in EVERY capture;
+    bilinear upsample without extra blur, matching the validated offline maps.
+    """
     if combine not in ('mean','min'): raise ValueError('combine must be mean or min')
     normalized=[]
     for x in captures:
@@ -30,6 +32,11 @@ def make_heat(captures, height, width, threshold, grow, feather, combine='mean')
     heat=stack.amin(0) if combine=='min' else stack.mean(0)
     heat=F.interpolate(heat[:,None],size=(height,width),mode='bilinear',align_corners=False)[:,0]
     if combine=='mean': heat=F.avg_pool2d(heat[:,None],9,1,4)[:,0]
+    return heat
+
+def make_heat(captures, height, width, threshold, grow, feather, combine='mean'):
+    """Legacy KleinInternalEditMaskSampler only: influence map plus built-in mask."""
+    heat=influence_map(captures,height,width,combine)
     mask=(heat>=threshold).float()
     if grow: mask=F.max_pool2d(mask[:,None],2*grow+1,1,grow)[:,0]
     if feather: mask=F.avg_pool2d(mask[:,None],2*feather+1,1,feather)[:,0]

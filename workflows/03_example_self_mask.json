@@ -1350,36 +1350,6 @@
           "link": null
         },
         {
-          "localized_name": "threshold",
-          "name": "threshold",
-          "shape": 7,
-          "type": "FLOAT",
-          "widget": {
-            "name": "threshold"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "grow",
-          "name": "grow",
-          "shape": 7,
-          "type": "INT",
-          "widget": {
-            "name": "grow"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "feather",
-          "name": "feather",
-          "shape": 7,
-          "type": "INT",
-          "widget": {
-            "name": "feather"
-          },
-          "link": null
-        },
-        {
           "localized_name": "probe_steps",
           "name": "probe_steps",
           "shape": 7,
@@ -1431,12 +1401,6 @@
           "links": []
         },
         {
-          "localized_name": "edit_mask",
-          "name": "edit_mask",
-          "type": "MASK",
-          "links": null
-        },
-        {
           "localized_name": "influence_heatmap",
           "name": "influence_heatmap",
           "type": "MASK",
@@ -1449,19 +1413,13 @@
           "localized_name": "diagnostics",
           "name": "diagnostics",
           "type": "STRING",
-          "links": null
-        },
-        {
-          "localized_name": "comparison_masks",
-          "name": "comparison_masks",
-          "type": "MASK",
-          "links": null
+          "links": []
         },
         {
           "localized_name": "comparison_heatmaps",
           "name": "comparison_heatmaps",
           "type": "MASK",
-          "links": null
+          "links": []
         }
       ],
       "properties": {
@@ -1474,18 +1432,12 @@
       },
       "widgets_values": [
         "sparse_neutral",
-        0.2,
-        2,
-        4,
         1,
         0,
         1
       ],
       "widgets_values_named": {
         "mode": "sparse_neutral",
-        "threshold": 0.2,
-        "grow": 2,
-        "feather": 4,
         "probe_steps": 1,
         "capture_start": 0,
         "capture_end": 1
@@ -3531,7 +3483,7 @@
     [
       130,
       61,
-      3,
+      2,
       78,
       0,
       "MASK"
@@ -3563,7 +3515,7 @@
     [
       137,
       61,
-      3,
+      2,
       81,
       0,
       "MASK"
@@ -3741,7 +3693,7 @@
       93,
       0,
       61,
-      14,
+      11,
       "CONDITIONING"
     ]
   ],
