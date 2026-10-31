@@ -1,4 +1,10 @@
-"""CPU-only regression suite; stubs sampling, uses real torch + LoadedModel source."""
+"""CPU-only regression suite; stubs sampling, uses real torch + LoadedModel source.
+
+Covers two things:
+  * model-clone / LoadedModel lifecycle (VRAM unload regression)
+  * the sampling-record -> influence-map split: parameter changes must never
+    need another diffusion pass, and recorded data must reproduce the maps.
+"""
 import ast
 import copy
 import gc
@@ -76,119 +82,149 @@ sys.modules.update({'nodes':nodes,'comfy':comfy,'comfy.samplers':samplers,'comfy
 def load(name,path):
     spec=importlib.util.spec_from_file_location(name,path);mod=importlib.util.module_from_spec(spec);sys.modules[name]=mod;spec.loader.exec_module(mod);return mod
 internal=load('klein_under_test.internal_sampler',INTERNAL)
+record_mod=load('klein_under_test.sampling_record',PLUGIN/'sampling_record.py')
+influence_mod=load('klein_under_test.influence_node',PLUGIN/'influence_node.py')
 mod=load('klein_under_test.sampler_variants',SOURCE)
+
+
+def _call(rec,x,ref=None,flags=(0,),apply=None):
+    c={'transformer_options':{},'c_crossattn':torch.zeros(x.shape[0],512,12288)}
+    if ref is not None:c['ref_latents']=[ref]
+    fn=apply or (lambda x,t,**c:x)
+    return rec.wrap(fn,{'input':x,'timestep':torch.ones(x.shape[0]),'c':c,'cond_or_uncond':list(flags)})
+
 
 class MemoryLifecycle(unittest.TestCase):
     def setUp(self):
         self.model=FakePatcher();self.latent={'samples':torch.randn(2,4,3,5)}
-    def recorder(self,**kw):return mod.Recorder(self.model,self.latent,4,capture_start=0,capture_end=1,**kw)
+    def recorder(self,**kw):return mod.Recorder(self.model,self.latent,4,**kw)
     def test_close_idempotent_and_only_one_clone(self):
         rec=self.recorder();loaded=LoadedModel(rec.patched);loaded.real_model=weakref.ref(self.model.model)
         self.assertIs(rec.patched.parent,self.model);self.assertEqual(len(self.model.clones),1)
         rec.close();rec.close();gc.collect()
-        self.assertIs(loaded.model,self.model);self.assertFalse(loaded.is_dead());self.assertIsNone(rec.src)
+        self.assertIs(loaded.model,self.model);self.assertFalse(loaded.is_dead());self.assertIsNone(rec.neutral)
         self.assertNotIn('model_function_wrapper',self.model.model_options)
     def test_validation_does_not_clone(self):
         for opts in ({'model_function_wrapper':lambda *a:None},{'sampler_calc_cond_batch_function':object()}):
             with self.assertRaises(ValueError):self.recorder(model_options=opts)
         self.assertEqual(self.model.clones,[])
-    def test_neutral_and_captures_are_cpu(self):
-        with self.recorder(mode='sparse_neutral',clip=FakeClip()) as rec:
+    def test_record_neutral_is_cpu_and_left_padded(self):
+        with self.recorder(record_neutral=True,clip=FakeClip()) as rec:
             self.assertEqual(rec.neutral.shape,(1,512,12288));self.assertTrue(torch.equal(rec.neutral[:,:505],torch.zeros(1,505,12288)))
-            x=torch.randn(2,4,3,5)
             calls=[]
-            def apply(x,t,**c):calls.append(c);return x+c['c_crossattn'].mean()
-            out=rec.wrap(apply,{'input':x,'timestep':torch.ones(2),'c':{'c_crossattn':torch.zeros(2,512,12),'transformer_options':{}},'cond_or_uncond':[0]})
-            self.assertTrue(torch.equal(out,x));self.assertEqual(len(calls),2)
-            self.assertEqual(rec.caps['sparse_neutral'][0].device.type,'cpu')
-            result=rec.finish();self.assertEqual(result[0].shape,(2,48,80))
-        self.assertEqual(rec.caps,{})
-    def test_prepared_neutral_skips_clip_and_releases_owned_copy(self):
+            def apply(x,t,**c):calls.append(1);return x+c['c_crossattn'].mean()
+            _call(rec,torch.zeros(2,4,3,5),apply=apply)
+            self.assertEqual(len(calls),2)                       # one edit + one neutral forward
+            self.assertIsNotNone(rec.record.steps[0]['neutral'])
+            self.assertEqual(rec.record.steps[0]['denoised'].device.type,'cpu')
+            self.assertNotIn('x_in',rec.record.steps[0])
+    def test_prepared_neutral_skips_clip_and_owns_no_copy(self):
         conditioning=[[torch.ones(1,7,12288),{}]]
         class ExplodingClip:
             def tokenize(self,text):raise AssertionError('Prepared input must not touch CLIP')
-        with self.recorder(mode='sparse_neutral',neutral_conditioning=conditioning,clip=ExplodingClip()) as rec:
+        with self.recorder(record_neutral=True,neutral_conditioning=conditioning,clip=ExplodingClip()) as rec:
             self.assertEqual(rec.neutral_source,'conditioning')
-            self.assertNotIn('neutral_conditioning',rec.kw)
             rec.neutral.zero_()
             self.assertTrue(torch.equal(conditioning[0][0],torch.ones(1,7,12288)))
         self.assertIsNone(rec.neutral)
-    def test_fast_modes_ignore_clip_and_neutral_inputs(self):
-        with self.recorder(mode='source_latent',clip=object(),neutral_conditioning=object()) as rec:
-            self.assertIsNone(rec.neutral)
-            self.assertEqual(rec.neutral_source,'unused')
-    def test_optional_contract_keeps_existing_order(self):
-        expected=['mode','probe_steps','capture_start','capture_end','clip','source_latent','neutral_conditioning','common_influence','source_reference']
+    def test_no_neutral_forward_without_flag(self):
+        calls=[]
+        with self.recorder(neutral_conditioning=[[torch.ones(1,7,12288),{}]]) as rec:
+            _call(rec,torch.zeros(2,4,3,5),apply=lambda x,t,**c:(calls.append(1),x)[1])
+            self.assertEqual(len(calls),1)
+            self.assertFalse(rec.record.neutral_enabled)
+    def test_optional_contract(self):
+        expected=['record_neutral','clip','source_latent','neutral_conditioning']
         self.assertEqual(list(mod.options()),expected)
         for cls in (mod.KleinMaskSamplerCustomAdvanced,mod.KleinMaskSamplerCustom,mod.KleinMaskKSampler,mod.KleinMaskKSamplerAdvanced):
-            self.assertEqual(cls.INPUT_TYPES()['optional']['neutral_conditioning'],('CONDITIONING',))
-    def _call(self,rec,x,ref=None,flags=(0,)):
-        c={'transformer_options':{},'c_crossattn':torch.zeros(x.shape[0],512,12288)}
-        if ref is not None:c['ref_latents']=[ref]
-        return rec.wrap(lambda x,t,**c:x,{'input':x,'timestep':torch.ones(x.shape[0]),'c':c,'cond_or_uncond':list(flags)})
-    def test_source_auto_uses_reference_latent_not_empty_latent(self):
-        ref=torch.full((2,4,3,5),3.)
-        with self.recorder(mode='source_latent') as rec:
-            self._call(rec,torch.zeros(2,4,3,5),ref)
-            self.assertEqual(rec.src_origin,'reference_latent')
-            self.assertTrue(torch.equal(rec.src,ref))
-            self.assertTrue(torch.allclose(rec.caps['source_latent'][0],torch.full((2,3,5),3.)))
-    def test_source_auto_falls_back_without_reference(self):
-        with self.recorder(mode='source_latent') as rec:
-            self._call(rec,torch.zeros(2,4,3,5))
-            self.assertEqual(rec.src_origin,'latent_image')
-    def test_source_latent_input_choice_ignores_reference(self):
-        given={'samples':torch.full((2,4,3,5),1.)}
-        with self.recorder(mode='source_latent',source_latent=given,source_reference='source_latent_input') as rec:
-            self._call(rec,torch.zeros(2,4,3,5),torch.full((2,4,3,5),9.))
-            self.assertEqual(rec.src_origin,'source_latent_input')
-            self.assertTrue(torch.equal(rec.src,given['samples']+0.25))
-    def test_reference_choice_fails_closed_without_reference(self):
-        with self.recorder(mode='source_latent',source_reference='reference_latent') as rec:
-            with self.assertRaises(ValueError):self._call(rec,torch.zeros(2,4,3,5))
+            self.assertEqual(cls.INPUT_TYPES()['optional']['record_neutral'][0],'BOOLEAN')
+            self.assertEqual(len(cls.RETURN_TYPES),len(cls.RETURN_NAMES))
+            self.assertIn('sampling_record',cls.RETURN_NAMES)
+            for gone in ('mode','threshold','grow','feather','probe_steps','capture_start','capture_end','common_influence','source_reference'):
+                self.assertNotIn(gone,cls.INPUT_TYPES()['optional'])
+        opt=influence_mod.KleinInfluenceMap.INPUT_TYPES()['optional']
+        for name in ('mode','capture_start','capture_end','probe_steps','common_influence','source_reference'):
+            self.assertIn(name,opt)
+    def _record_two(self,**kw):
+        with self.recorder(**kw) as rec:
+            for _ in range(2):_call(rec,torch.zeros(2,4,3,5),torch.ones(2,4,3,5))
+            record,info=rec.finish()
+        return record,json.loads(info)
+    def test_reference_latent_is_recorded_and_selected(self):
+        record,_=self._record_two()
+        ref,origin=record.source_for('auto');self.assertEqual(origin,'reference_latent');self.assertTrue(torch.equal(ref,torch.ones(2,4,3,5)))
+        # The sampler input stays available under the explicit choice.
+        given,origin=record.source_for('source_latent_input');self.assertEqual(origin,'source_latent_input')
+        self.assertFalse(torch.equal(given,ref));self.assertEqual(record.src_origin,'latent_image')
+    def test_reference_choice_fails_closed(self):
+        latent={'samples':torch.zeros(2,4,3,5)}
+        with mod.Recorder(self.model,latent,4) as rec:     # no ReferenceLatent in the call
+            _call(rec,torch.zeros(2,4,3,5))
+            record,info=rec.finish()
+        with self.assertRaises(ValueError):record.source_for('reference_latent')
+        with self.assertRaises(ValueError):record.source_for('bogus')
+        fallback,origin=record.source_for('auto');self.assertEqual(origin,'latent_image')
     def test_reference_is_sliced_from_cfg_batch(self):
-        ref=torch.cat([torch.full((2,4,3,5),7.),torch.full((2,4,3,5),2.)])
-        with self.recorder(mode='source_latent') as rec:
-            self._call(rec,torch.zeros(4,4,3,5),ref,flags=(1,0))
-            self.assertTrue(torch.equal(rec.src,torch.full((2,4,3,5),2.)))
-    def test_common_influence_is_elementwise_min(self):
+        latent={'samples':torch.zeros(2,4,3,5)}
+        with mod.Recorder(self.model,latent,4) as rec:
+            _call(rec,torch.zeros(4,4,3,5),torch.cat([torch.full((2,4,3,5),7.),torch.full((2,4,3,5),2.)]),flags=(1,0))
+            record,info=rec.finish()
+        self.assertTrue(torch.equal(record.reference,torch.full((2,4,3,5),2.)))
+    def test_maps_match_manual_math(self):
+        record,_=self._record_two()
+        maps,info=record_mod.build_maps(record,'source_latent',0,-1,2,False,'auto')
+        src,origin=record.source_for('auto')
+        expected_caps=[record_mod._rms(s['denoised'],src) for s in record.steps]
+        expected=internal.influence_map(expected_caps,48,80,'mean')
+        self.assertTrue(torch.equal(maps['source_latent'],expected))
+        self.assertEqual(info['source_origin'],origin)
+        self.assertEqual(info['captured_calls']['source_latent'],[0,1])
+    def test_common_influence_elementwise_min(self):
         a=torch.zeros(1,4,4);b=torch.zeros(1,4,4)
-        a[0,:2]=1;b[0,1:3]=1
-        a[0,3,3]=0.5;b[0,3,3]=0.5  # keep both maps' q99.5 non-degenerate
-        mean=internal.influence_map([a,b],4,4,'mean')
-        common=internal.influence_map([a,b],4,4,'min')
-        self.assertGreater(float(common[0,1].mean()),0.9)            # strong in both
-        self.assertLess(float(common[0,0].max()),1e-6)                # only in a
-        self.assertLess(float(common[0,2].max()),1e-6)                # only in b
+        a[0,:2]=1;b[0,1:3]=1;a[0,3,3]=0.5;b[0,3,3]=0.5
+        mean=internal.influence_map([a,b],4,4,'mean');common=internal.influence_map([a,b],4,4,'min')
+        self.assertGreater(float(common[0,1].mean()),0.9)
+        self.assertLess(float(common[0,0].max()),1e-6)
+        self.assertLess(float(common[0,2].max()),1e-6)
         self.assertGreater(float(mean[0,0].mean()),float(common[0,0].mean()))
         with self.assertRaises(ValueError):internal.influence_map([a],4,4,'max')
-        # Legacy sampler keeps its built-in mask and reuses the same heat.
-        mask,legacy_heat=internal.make_heat([a,b],4,4,0.5,0,0,'min')
-        self.assertTrue(torch.equal(legacy_heat,common));self.assertTrue(torch.equal(mask,(common>=0.5).float()))
-    def test_outputs_are_heat_only(self):
-        self.assertEqual(mod.MASK_NAMES,('influence_heatmap','diagnostics','comparison_heatmaps'))
-        for cls in (mod.KleinMaskSamplerCustomAdvanced,mod.KleinMaskSamplerCustom,mod.KleinMaskKSampler,mod.KleinMaskKSamplerAdvanced):
-            self.assertEqual(len(cls.RETURN_TYPES),len(cls.RETURN_NAMES))
-            self.assertNotIn('edit_mask',cls.RETURN_NAMES);self.assertNotIn('comparison_masks',cls.RETURN_NAMES)
-            for k in ('threshold','grow','feather'):self.assertNotIn(k,cls.INPUT_TYPES()['optional'])
-        with self.recorder(mode='compare_all',neutral_conditioning=[[torch.ones(1,7,12288),{}]]) as rec:
-            for _ in range(2):self._call(rec,torch.zeros(2,4,3,5),torch.ones(2,4,3,5))
-            heat,info,heats=rec.finish()
-            self.assertEqual(heat.shape,(2,48,80));self.assertEqual(heats.shape,(10,48,80))
-            self.assertTrue(isinstance(info,str))
-            self.assertGreaterEqual(float(heat.min()),0.);self.assertLessEqual(float(heat.max()),1.)
-    def test_common_uses_only_capture_window(self):
-        latent={'samples':torch.zeros(1,4,3,5)}
-        with mod.Recorder(self.model,latent,4,mode='source_latent',common_influence=True,capture_start=1,capture_end=2) as rec:
-            for _ in range(4):self._call(rec,torch.zeros(1,4,3,5),torch.ones(1,4,3,5))
-            self.assertEqual(rec.at['source_latent'],[1,2])
-            self.assertEqual(json.loads(rec.finish()[1])['captured_calls']['source_latent'],[1,2])
-    def test_common_flag_reaches_finish(self):
-        with self.recorder(mode='source_latent',common_influence=True) as rec:
-            self._call(rec,torch.zeros(2,4,3,5),torch.ones(2,4,3,5))
-            self._call(rec,torch.zeros(2,4,3,5),torch.ones(2,4,3,5))
-            info=json.loads(rec.finish()[1])
-            self.assertEqual(info['combine'],'common_min');self.assertEqual(info['source_origin'],'reference_latent')
+    def test_adjacent_and_capture_window(self):
+        record,_=self._record_two()
+        maps,info=record_mod.build_maps(record,'adjacent_prediction',1,-1,2,False,'auto')
+        self.assertEqual(info['captured_calls']['adjacent_prediction'],[1])
+        self.assertIn('adjacent_prediction',maps)
+        maps,info=record_mod.build_maps(record,'source_latent',0,0,2,False,'auto')
+        self.assertEqual(info['captured_calls']['source_latent'],[0])
+    def test_neutral_modes_need_record_neutral(self):
+        record,_=self._record_two()
+        with self.assertRaises(ValueError):record_mod.build_maps(record,'sparse_neutral',0,-1,2,False,'auto')
+    def test_neutral_modes_reuse_recorded_neutral(self):
+        record,_=self._record_two(record_neutral=True,neutral_conditioning=[[torch.ones(1,7,12288),{}]])
+        self.assertTrue(record.neutral_enabled)
+        first,_=record_mod.build_maps(record,'sparse_neutral',0,-1,2,False,'auto')
+        # Recomputing with different parameters must not need (or touch) new data.
+        before=len(record.steps);neutral_before=dict(record._neutral_by_index)
+        second,info=record_mod.build_maps(record,'dense_neutral',0,-1,5,True,'auto')
+        self.assertEqual(len(record.steps),before)
+        self.assertEqual(set(record._neutral_by_index),set(neutral_before))
+        self.assertEqual(info['combine'],'common_min')
+        self.assertEqual(tuple(first['sparse_neutral'].shape),tuple(second['dense_neutral'].shape))
+    def test_compare_all_orders_maps(self):
+        record,_=self._record_two(record_neutral=True,neutral_conditioning=[[torch.ones(1,7,12288),{}]])
+        with patch.object(influence_mod.KleinInfluenceMap,'compute',influence_mod.KleinInfluenceMap.compute):
+            heat,text,heats=influence_mod.KleinInfluenceMap().compute(record,mode='compare_all',capture_start=0,capture_end=-1,probe_steps=2,common_influence=False,source_reference='auto')
+        info=json.loads(text)
+        self.assertEqual(info['comparison_order'],internal.METRICS)
+        self.assertEqual(heats.shape[0],len(internal.METRICS)*heat.shape[0])
+        self.assertGreaterEqual(float(heat.min()),0.);self.assertLessEqual(float(heat.max()),1.)
+    def test_noise_mask_is_applied(self):
+        latent={'samples':torch.randn(2,4,3,5),'noise_mask':torch.ones(2,3,5)}
+        with mod.Recorder(self.model,latent,4) as rec:
+            for _ in range(2):_call(rec,torch.zeros(2,4,3,5),torch.ones(2,4,3,5))
+            record,info=rec.finish()
+        maps,meta=record_mod.build_maps(record,'source_latent',0,-1,2,False,'auto')
+        self.assertTrue(meta['noise_mask_applied'])
+        self.assertEqual(tuple(maps['source_latent'].shape),(2,48,80))
     def test_positive_replay_keeps_samples_and_reference_blocks_aligned(self):
         x=torch.arange(4*4*3*5).reshape(4,4,3,5).float();t=torch.tensor([9.,9.,8.,8.]);ref=x+10
         args={'input':x,'timestep':t,'cond_or_uncond':[1,0],'c':{'c_crossattn':torch.zeros(4,512,12),'guidance':torch.arange(4.),'ref_latents':[ref],'ref_latents_method':'index_timestep_zero','transformer_options':{'cond_or_uncond':[1,0],'uuids':['neg','pos'],'sigmas':torch.ones(2)}}}
@@ -212,10 +248,10 @@ class MemoryLifecycle(unittest.TestCase):
             return latent,latent
         with patch.object(mod.SamplerCustomAdvanced,'execute',execute):
             if failure:
-                with self.assertRaises(type(failure)):mod.KleinMaskSamplerCustomAdvanced().sample(None,guider,None,torch.tensor([1.,.5,0.]),self.latent,mode='source_latent',capture_start=0)
+                with self.assertRaises(type(failure)):mod.KleinMaskSamplerCustomAdvanced().sample(None,guider,None,torch.tensor([1.,.5,0.]),self.latent)
             else:
-                result=mod.KleinMaskSamplerCustomAdvanced().sample(None,guider,None,torch.tensor([1.,.5,0.]),self.latent,mode='source_latent',capture_start=0)
-                self.assertIs(result[0],self.latent)
+                result=mod.KleinMaskSamplerCustomAdvanced().sample(None,guider,None,torch.tensor([1.,.5,0.]),self.latent)
+                self.assertIs(result[0],self.latent);self.assertIn('steps',result[2].describe())
         gc.collect();self.assertIs(seen[0].model,self.model);self.assertFalse(seen[0].is_dead())
         self.assertIs(guider.model_options,opts);self.assertIs(guider.original_conds,conds);self.assertNotIn('model_function_wrapper',opts)
         self.assertEqual(len(self.model.clones),1);self.assertEqual(private[0].__dict__,{})
@@ -233,7 +269,7 @@ class MemoryLifecycle(unittest.TestCase):
             for call in calls:
                 with self.assertRaises(RuntimeError):call()
         self.assertEqual(len(made),3)
-        for rec in made:self.assertIsNone(rec.patched);self.assertIsNone(rec.src);self.assertEqual(rec.caps,{})
+        for rec in made:self.assertIsNone(rec.patched);self.assertIsNone(rec.neutral);self.assertEqual(rec.kw,{})
     def test_rms_matches_math(self):
         a=torch.randn(2,4,3,5);b=torch.randn_like(a)
         self.assertTrue(torch.equal(internal.rms(a,b),((a-b).square().mean(1).sqrt())))

@@ -1,8 +1,8 @@
 {
   "id": "d5b5895c-9440-4ff8-8d03-16b3a16c78fc",
   "revision": 0,
-  "last_node_id": 93,
-  "last_link_id": 152,
+  "last_node_id": 94,
+  "last_link_id": 153,
   "nodes": [
     {
       "id": 37,
@@ -1340,49 +1340,17 @@
           "link": 104
         },
         {
-          "localized_name": "mode",
-          "name": "mode",
-          "shape": 7,
-          "type": "COMBO",
-          "widget": {
-            "name": "mode"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "probe_steps",
-          "name": "probe_steps",
-          "shape": 7,
-          "type": "INT",
-          "widget": {
-            "name": "probe_steps"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "capture_start",
-          "name": "capture_start",
-          "shape": 7,
-          "type": "INT",
-          "widget": {
-            "name": "capture_start"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "capture_end",
-          "name": "capture_end",
-          "shape": 7,
-          "type": "INT",
-          "widget": {
-            "name": "capture_end"
-          },
-          "link": null
-        },
-        {
           "name": "neutral_conditioning",
           "type": "CONDITIONING",
           "link": 152
+        },
+        {
+          "name": "record_neutral",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "record_neutral"
+          },
+          "link": null
         }
       ],
       "outputs": [
@@ -1401,24 +1369,15 @@
           "links": []
         },
         {
-          "localized_name": "influence_heatmap",
-          "name": "influence_heatmap",
-          "type": "MASK",
+          "name": "sampling_record",
+          "type": "KLEIN_SAMPLING_RECORD",
           "links": [
-            130,
-            137
+            153
           ]
         },
         {
-          "localized_name": "diagnostics",
           "name": "diagnostics",
           "type": "STRING",
-          "links": []
-        },
-        {
-          "localized_name": "comparison_heatmaps",
-          "name": "comparison_heatmaps",
-          "type": "MASK",
           "links": []
         }
       ],
@@ -1431,17 +1390,8 @@
         "Node name for S&R": "KleinMaskSamplerCustomAdvanced"
       },
       "widgets_values": [
-        "sparse_neutral",
-        1,
-        0,
-        1
-      ],
-      "widgets_values_named": {
-        "mode": "sparse_neutral",
-        "probe_steps": 1,
-        "capture_start": 0,
-        "capture_end": 1
-      }
+        true
+      ]
     },
     {
       "id": 62,
@@ -3181,6 +3131,59 @@
         "Node name for S&R": "KleinNeutralConditioning"
       },
       "widgets_values": []
+    },
+    {
+      "id": 94,
+      "type": "KleinInfluenceMap",
+      "pos": [
+        2110,
+        -1170
+      ],
+      "size": [
+        280,
+        150
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "record",
+          "type": "KLEIN_SAMPLING_RECORD",
+          "link": 153
+        }
+      ],
+      "outputs": [
+        {
+          "name": "influence_heatmap",
+          "type": "MASK",
+          "links": [
+            130,
+            137
+          ]
+        },
+        {
+          "name": "diagnostics",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "comparison_heatmaps",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KleinInfluenceMap"
+      },
+      "widgets_values": [
+        "sparse_neutral",
+        0,
+        1,
+        1,
+        false,
+        "auto"
+      ]
     }
   ],
   "links": [
@@ -3482,8 +3485,8 @@
     ],
     [
       130,
-      61,
-      2,
+      94,
+      0,
       78,
       0,
       "MASK"
@@ -3514,8 +3517,8 @@
     ],
     [
       137,
-      61,
-      2,
+      94,
+      0,
       81,
       0,
       "MASK"
@@ -3693,8 +3696,16 @@
       93,
       0,
       61,
-      11,
+      7,
       "CONDITIONING"
+    ],
+    [
+      153,
+      61,
+      2,
+      94,
+      0,
+      "KLEIN_SAMPLING_RECORD"
     ]
   ],
   "groups": [

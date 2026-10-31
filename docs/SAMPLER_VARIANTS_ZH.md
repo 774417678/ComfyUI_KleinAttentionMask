@@ -11,28 +11,50 @@
 | `KleinMaskKSampler` | 标准 KSampler（含 `denoise`） | `samples` |
 | `KleinMaskKSamplerAdvanced` | KSamplerAdvanced（加噪开关、起止步、保留剩余噪声） | `samples` |
 
-之后固定追加 3 个输出：
+之后固定追加 2 个输出：
+
+```
+sampling_record, diagnostics
+```
+
+`sampling_record` 接到 **`KleinInfluenceMap`**，由它输出：
 
 ```
 influence_heatmap, diagnostics, comparison_heatmaps
 ```
 
-`influence_heatmap` 为连续 0–1 影响图，节点内不做二值化、扩张或羽化，遮罩用核心 `ThresholdMask` / `GrowMask` / `FeatherMask` 在外部生成。`compare_all` 时 `comparison_heatmaps` 按 batch 依次放五种模式的影响图。
+`influence_heatmap` 为连续 0–1 影响图，不做二值化、扩张或羽化，遮罩用核心 `ThresholdMask` / `GrowMask` / `FeatherMask` 在外部生成。`compare_all` 时 `comparison_heatmaps` 按 batch 依次放五种模式的影响图。
 
 采样完全委托当前 ComfyUI 原生节点执行，噪声生成、seed、sigma、`noise_mask`、预览 callback、x0 输出、`downscale_ratio_spacial/temporal` 均由原生路径处理。影响图额外乘以输入 `noise_mask`，避免在不可重绘区域给出建议。
+
+## 缓存行为
+
+采样只执行一次。`mode`、`capture_start` / `capture_end`、`probe_steps`、`common_influence`、`source_reference` 都在影响图节点上，只做 CPU 运算，**改这些参数不会重新采样**：采样器、`VAEDecode`、`SaveImage` 命中缓存，仅影响图节点重算（已实测确认）。
+
+记录内容包括每次正向调用的干净预测、参考图 latent、原图基准与 `noise_mask`；噪声输入本身不需要保存，因为所有模式都是预测与预测之间的比较。
+
+中性模式所需的中性预测只能在采样时产生：把采样器的 `record_neutral` 打开并接 `neutral_conditioning`，即每步多一次前向并记录下来；此后切换 `fixed_neutral` / `sparse_neutral` / `dense_neutral` / `compare_all` 都不再重跑采样。未记录就请求中性模式会明确报错，不会静默给错结果。
+
+`source_latent` / `adjacent_prediction` 不需要中性预测，`record_neutral` 保持关闭，采样耗时与原生一致。
 
 ## 可选输入
 
 | 输入 | 说明 |
 |---|---|
-| `neutral_conditioning` | 中性模式首选：连接 `KleinNeutralConditioning` 或核心 `CLIPTextEncode` 编码固定句 `Keep the image unchanged.` 的输出。优先于 `clip`，采样器内部不再调用文本编码器 |
-| `clip` | 旧图兼容入口；只在未提供中性条件时内部编码，可能抬高峰值。新图请使用准备节点；`source_latent` / `adjacent_prediction` 不触碰这两项输入 |
-| `source_latent` | 无参考图条件时的干净原图 latent，默认退回 `latent_image["samples"]`；**续采的带噪 latent 必须显式提供**，并设 `source_reference=source_latent_input` |
-| `common_influence` | 共同影响开关。开启后对 `capture_start`..`capture_end` 选中的每次采集分别归一化后逐点取最小值，只保留每次都强的区域；关闭为原平均 |
-| `source_reference` | `auto` / `reference_latent` / `source_latent_input`。`auto` 优先取正向条件第一张 `ReferenceLatent`（CFG 打包时按正向块切片），形状不符或没有时退回 `source_latent` 输入；`reference_latent` 缺失时报错 |
+| `record_neutral` | 开：每次调用额外跑一次中性预测并记录；关：零额外前向 |
+| `neutral_conditioning` | `record_neutral` 打开时使用：连接 `KleinNeutralConditioning` 或核心 `CLIPTextEncode` 编码固定句 `Keep the image unchanged.` 的输出。优先于 `clip`，采样器内部不再调用文本编码器 |
+| `clip` | 旧图兼容入口；只在未提供中性条件时内部编码，可能抬高峰值 |
+| `source_latent` | 无参考图条件时的干净原图 latent，默认退回 `latent_image["samples"]`；**续采的带噪 latent 必须显式提供**，并把影响图的 `source_reference` 设为 `source_latent_input` |
+
+## 影响图节点参数
+
+| 参数 | 说明 |
+|---|---|
 | `mode` | 见 README「模式」一节 |
-| `probe_steps` | 见 README「参数详解」 |
+| `probe_steps` | 仅 `sparse_neutral`，见 README「参数详解」 |
 | `capture_start` / `capture_end` | **模型调用序号**，0 起编号，`-1` 表示到结束 |
+| `common_influence` | 每次采集分别归一化后逐点取最小值，只保留每次都强的区域；关闭为平均 |
+| `source_reference` | `auto` / `reference_latent` / `source_latent_input`。`auto` 优先取参考图 latent（CFG 打包时按正向块切片），没有时退回采样器 `source_latent` 输入或 `latent_image`；`reference_latent` 缺失时报错 |
 
 ## 调用序号 ≠ 步号
 

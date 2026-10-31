@@ -1,6 +1,6 @@
 {
-  "last_node_id": 34,
-  "last_link_id": 29,
+  "last_node_id": 35,
+  "last_link_id": 30,
   "nodes": [
     {
       "id": 2,
@@ -398,6 +398,14 @@
           "name": "neutral_conditioning",
           "type": "CONDITIONING",
           "link": 24
+        },
+        {
+          "name": "record_neutral",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "record_neutral"
+          },
+          "link": null
         }
       ],
       "outputs": [
@@ -414,20 +422,15 @@
           "links": []
         },
         {
-          "name": "influence_heatmap",
-          "type": "MASK",
+          "name": "sampling_record",
+          "type": "KLEIN_SAMPLING_RECORD",
           "links": [
-            25
+            30
           ]
         },
         {
           "name": "diagnostics",
           "type": "STRING",
-          "links": []
-        },
-        {
-          "name": "comparison_heatmaps",
-          "type": "MASK",
           "links": []
         }
       ],
@@ -435,10 +438,7 @@
         "Node name for S&R": "KleinMaskSamplerCustomAdvanced"
       },
       "widgets_values": [
-        "sparse_neutral",
-        2,
-        0,
-        1
+        true
       ]
     },
     {
@@ -821,6 +821,58 @@
         4,
         4
       ]
+    },
+    {
+      "id": 35,
+      "type": "KleinInfluenceMap",
+      "pos": [
+        420,
+        960
+      ],
+      "size": [
+        280,
+        150
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "record",
+          "type": "KLEIN_SAMPLING_RECORD",
+          "link": 30
+        }
+      ],
+      "outputs": [
+        {
+          "name": "influence_heatmap",
+          "type": "MASK",
+          "links": [
+            25
+          ]
+        },
+        {
+          "name": "diagnostics",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "comparison_heatmaps",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KleinInfluenceMap"
+      },
+      "widgets_values": [
+        "sparse_neutral",
+        0,
+        1,
+        2,
+        false,
+        "auto"
+      ]
     }
   ],
   "links": [
@@ -994,8 +1046,8 @@
     ],
     [
       25,
-      24,
-      2,
+      35,
+      0,
       32,
       0,
       "MASK"
@@ -1031,6 +1083,14 @@
       29,
       2,
       "MASK"
+    ],
+    [
+      30,
+      24,
+      2,
+      35,
+      0,
+      "KLEIN_SAMPLING_RECORD"
     ]
   ],
   "groups": [],
