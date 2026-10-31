@@ -244,6 +244,24 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 
 ---
 
+## 版本与旧版获取
+
+| 标签 | 内容 |
+|---|---|
+| `v2.0.0` | 当前版本：采样器只采样并记录，`KleinInfluenceMap` 负责出影响图；改参数不再重跑采样 |
+| `legacy-single-node` | 2.0 之前的单节点版本：采样时直接算影响图/掩码，参数在采样器上，改参数会整节点重跑 |
+
+需要旧版时按标签取回即可，不影响现有安装：
+
+```bash
+git clone --branch legacy-single-node https://github.com/774417678/ComfyUI_KleinAttentionMask.git
+# 或在已有目录里： git checkout legacy-single-node
+```
+
+两个版本的节点结构不兼容（旧工作流的参数在采样器上、输出直接给影响图），混用会缺少应有的输入/输出，请整套切换。
+
+---
+
 ## 推荐配置为什么是 `sparse_neutral` + `0` + `1`
 
 去噪早期的步骤（高噪声）承载最强的**语义定位**信号——模型此时还在决定"改哪里"；到后期预测趋于稳定，差异变小且容易混入纹理级噪声。
