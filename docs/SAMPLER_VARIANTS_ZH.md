@@ -27,32 +27,43 @@ influence_heatmap, diagnostics, comparison_heatmaps
 
 采样完全委托当前 ComfyUI 原生节点执行，噪声生成、seed、sigma、`noise_mask`、预览 callback、x0 输出、`downscale_ratio_spacial/temporal` 均由原生路径处理。影响图额外乘以输入 `noise_mask`，避免在不可重绘区域给出建议。
 
-## 缓存行为
+## 缓存行为与 cost
 
-采样只执行一次。`mode`、`capture_start` / `capture_end`、`probe_steps`、`common_influence`、`source_reference` 都在影响图节点上，只做 CPU 运算，**改这些参数不会重新采样**：采样器、`VAEDecode`、`SaveImage` 命中缓存，仅影响图节点重算（已实测确认）。
+采样只执行一次。决定记录内容的是**采样器上的** `mode` / `capture_start` / `capture_end` / `probe_steps`：中性预测只在模型处于那个具体带噪状态时才存在，所以必须在采样前确定。每种模式只记它需要的部分，额外前向与旧版单节点一致：
+
+| mode | 额外前向（4 步 Euler） |
+|---|---:|
+| `source_latent` / `adjacent_prediction` | 0 |
+| `fixed_neutral` | 1（仅第 0 次调用） |
+| `sparse_neutral` | `probe_steps` |
+| `dense_neutral` / `compare_all` | 窗口内调用数 |
+
+记录按上游输入身份缓存，并**向下兼容**：跑过 `dense_neutral` / `compare_all` 后改成 `fixed_neutral` 或 `source_latent` 不再跑扩散（实测约 1 秒返回，节点重组但内部跳过采样）。把窗口收窄到“没记录过中性”的步骤时才需要重采一次。上游模型/噪声/sigmas/latent/条件变化会改变缓存键，正常重跑。
+
+`KleinInfluenceMap` 上只有 `common_influence` 与 `source_reference` 两个纯后处理参数，改它们永远不触发采样。
 
 记录内容包括每次正向调用的干净预测、参考图 latent、原图基准与 `noise_mask`；噪声输入本身不需要保存，因为所有模式都是预测与预测之间的比较。
-
-中性模式所需的中性预测只能在采样时产生：把采样器的 `record_neutral` 打开并接 `neutral_conditioning`，即每步多一次前向并记录下来；此后切换 `fixed_neutral` / `sparse_neutral` / `dense_neutral` / `compare_all` 都不再重跑采样。未记录就请求中性模式会明确报错，不会静默给错结果。
-
-`source_latent` / `adjacent_prediction` 不需要中性预测，`record_neutral` 保持关闭，采样耗时与原生一致。
 
 ## 可选输入
 
 | 输入 | 说明 |
 |---|---|
-| `record_neutral` | 开：每次调用额外跑一次中性预测并记录；关：零额外前向 |
-| `neutral_conditioning` | `record_neutral` 打开时使用：连接 `KleinNeutralConditioning` 或核心 `CLIPTextEncode` 编码固定句 `Keep the image unchanged.` 的输出。优先于 `clip`，采样器内部不再调用文本编码器 |
+| `neutral_conditioning` | 中性模式需要：连接 `KleinNeutralConditioning` 或核心 `CLIPTextEncode` 编码固定句 `Keep the image unchanged.` 的输出。优先于 `clip`，采样器内部不再调用文本编码器 |
 | `clip` | 旧图兼容入口；只在未提供中性条件时内部编码，可能抬高峰值 |
 | `source_latent` | 无参考图条件时的干净原图 latent，默认退回 `latent_image["samples"]`；**续采的带噪 latent 必须显式提供**，并把影响图的 `source_reference` 设为 `source_latent_input` |
 
-## 影响图节点参数
+## 采样器参数（决定记录内容）
 
 | 参数 | 说明 |
 |---|---|
 | `mode` | 见 README「模式」一节 |
-| `probe_steps` | 仅 `sparse_neutral`，见 README「参数详解」 |
 | `capture_start` / `capture_end` | **模型调用序号**，0 起编号，`-1` 表示到结束 |
+| `probe_steps` | 仅 `sparse_neutral` |
+
+## 影响图节点参数（纯后处理）
+
+| 参数 | 说明 |
+|---|---|
 | `common_influence` | 每次采集分别归一化后逐点取最小值，只保留每次都强的区域；关闭为平均 |
 | `source_reference` | `auto` / `reference_latent` / `source_latent_input`。`auto` 优先取参考图 latent（CFG 打包时按正向块切片），没有时退回采样器 `source_latent` 输入或 `latent_image`；`reference_latent` 缺失时报错 |
 

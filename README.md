@@ -55,15 +55,12 @@ SamplerCustomAdvanced(掩码版) → sampling_record → KleinInfluenceMap → i
 
 | 参数 | 推荐值 |
 |---|---|
-| `mode` | `source_latent`（多物体改不动时换 `fixed_neutral`） |
-| `capture_start` | `0` |
-| `capture_end` | `-1` |
 | `common_influence` | 开 |
 | `source_reference` | `auto` |
 
-采样器的 `record_neutral` 只在要用中性模式时打开。
+采样器上设 `mode`（局部编辑用 `source_latent`；多物体改不动再换 `fixed_neutral`）、`capture_start=0`、`capture_end=-1`。
 
-**`source_latent` + 共同影响是零额外前向的组合**，采样耗时与原生一致；`fixed_neutral` 定位更稳但每步多一次前向，按需切换即可（切换不会重跑采样，只要 `record_neutral` 已记录）。
+**`source_latent` + 共同影响是零额外前向的组合**，采样耗时与原生一致；`fixed_neutral` 定位更稳，只多一次中性前向（第 0 次调用）。
 
 可直接导入 [`workflows/03_example_self_mask.json`](workflows/03_example_self_mask.json)。该工作流的 `LoadImage` 指向 `example_input.png`，请先把 [`images/example_input.png`](images/example_input.png) 复制到 ComfyUI 的 `input/` 目录。模型名请改成你自己的 Klein 9B 权重（模板中为占位名 `klein9b/your_klein_9b.safetensors`），尺寸为 896×1152。
 
@@ -149,13 +146,22 @@ influence_heatmap , diagnostics , comparison_heatmaps
 
 `influence_heatmap` 是连续 0–1 的 MASK 影响图，**不做**二值化、扩张或羽化（阈值用外部 `ThresholdMask` / `GrowMask` / `FeatherMask`）。
 
-### 为什么拆成两个节点
+### 为什么 mode 在采样器上
 
-采样只跑一次，每一步的编辑预测被记录在 `sampling_record` 里；`mode`、采集窗口、`probe_steps`、共同影响、原图来源全部在 `KleinInfluenceMap` 上，只做 CPU 运算。**因此调这些参数不会重新采样**，采样和下游 VAE 解码、合成都命中缓存，只有影响图节点重算。实测：改 `common_influence` 后采样器、`VAEDecode`、`SaveImage` 全部标记为 cached，仅影响图节点重新执行。
+中性预测只在模型处于那个具体的带噪状态时才存在，所以**记录什么必须在采样前决定**。因此 `mode`、`capture_start` / `capture_end`、`probe_steps` 留在采样器上，每种模式只记它需要的部分，额外前向与旧版单节点完全一致：
 
-中性模式需要每步的中性预测，这部分只能在采样时执行：把采样器的 `record_neutral` 打开（连接 `neutral_conditioning`）即可一次性记录，之后在影响图上切 `fixed_neutral` / `sparse_neutral` / `dense_neutral` / `compare_all` 都不再重跑采样。
+| mode | 额外前向（4 步 Euler） |
+|---|---:|
+| `source_latent` / `adjacent_prediction` | 0 |
+| `fixed_neutral` | 1（仅第 0 次调用） |
+| `sparse_neutral` | `probe_steps`（窗口内） |
+| `dense_neutral` / `compare_all` | 窗口内的调用数 |
 
-`source_latent` / `adjacent_prediction` 不需要中性预测，`record_neutral` 保持关闭即可，采样耗时与原生一致。
+记录完成后会按上游输入的身份缓存。**覆盖范围向下兼容**：跑过 `dense_neutral` / `compare_all` 之后，把 mode 改成 `fixed_neutral` 或 `source_latent` 不会重跑扩散，直接复用已记录的数据；采样器节点仍会重新执行，但内部跳过采样（实测约 1 秒完成）。只有把 mode 收窄到“记录里没有的中性步骤”时才需要重采一次。
+
+上游任何影响采样的输入（模型、噪声、sigmas、latent、条件）发生变化，缓存键就不同，会正常重跑。
+
+`KleinInfluenceMap` 上只剩两个纯后处理参数：`common_influence` 与 `source_reference`，改它们永远不触发采样。
 
 > 2026-10-31 起 `mode` 等参数从采样器移到影响图节点，并移除了旧的 `edit_mask` / `comparison_masks` 输出与 `threshold` / `grow` / `feather` 参数。旧工作流需要按新接线重连（示例工作流已迁移）；旧版本仍可从 Releases 页面按 tag 取得。
 
@@ -163,16 +169,16 @@ influence_heatmap , diagnostics , comparison_heatmaps
 
 ## 参数详解
 
-### `mode` —— 五种对比基准（在 `KleinInfluenceMap` 上）
+### `mode` —— 五种对比基准（在采样器上）
 
-| 模式 | 比较对象 | 需要 `record_neutral` | 含义与适用 |
+| 模式 | 比较对象 | 额外前向 | 含义与适用 |
 |---|---|---:|---|
-| **`source_latent`** | 每步干净预测 ↔ 原图 latent（默认自动取编辑条件里的参考图，见 `source_reference`） | 否 | "模型预测会把原图改成什么样"。最快，包含模型复原误差；配合 `common_influence` 取多步共同区域后背景很干净，**绝大多数情况够用** |
-| **`fixed_neutral`** | 每步预测 ↔ 第 0 步那次中性预测 | 是 | 目前定位最稳，但含跨噪声状态差异，且需要中性前向，**有额外开销** |
-| **`adjacent_prediction`** | 第 N 步预测 ↔ 第 N-1 步预测 | 否 | "哪里还在变"。已稳定下来的编辑信号会消失，后期纹理抖动反而明显。适合观察采样动态 |
-| **`sparse_neutral`** ⭐ | 选定调用的编辑预测 ↔ 同状态中性预测 | 是 | **纯净的指令影响**。推荐默认 |
-| **`dense_neutral`** | 窗口内每步都配对 | 是 | 最完整，也最慢 |
-| **`compare_all`** | 以上五种同时输出 | 是 | 一次采样对比全部模式，用于调参 |
+| **`source_latent`** | 每步干净预测 ↔ 原图 latent（默认自动取编辑条件里的参考图，见 `source_reference`） | 0 | "模型预测会把原图改成什么样"。最快，包含模型复原误差；配合 `common_influence` 取多步共同区域后背景很干净，**绝大多数情况够用** |
+| **`fixed_neutral`** | 每步预测 ↔ 第 0 步那次中性预测 | 1 | 目前定位最稳，但含跨噪声状态差异，需一次中性前向 |
+| **`adjacent_prediction`** | 第 N 步预测 ↔ 第 N-1 步预测 | 0 | "哪里还在变"。已稳定下来的编辑信号会消失，后期纹理抖动反而明显。适合观察采样动态 |
+| **`sparse_neutral`** ⭐ | 选定调用的编辑预测 ↔ 同状态中性预测 | `probe_steps` | **纯净的指令影响**。推荐默认 |
+| **`dense_neutral`** | 窗口内每步都配对 | 窗口步数 | 最完整，也最慢 |
+| **`compare_all`** | 以上五种同时输出 | 窗口步数 | 一次采样对比全部模式，用于调参 |
 
 `compare_all` 的 `influence_heatmap` 采用 `source_latent`，五组完整影响图从 `comparison_heatmaps` 按 batch 读取，顺序固定为：
 
@@ -190,25 +196,25 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 | 多物体，且能接受额外前向 | `fixed_neutral`，目前定位最稳；每步多一次中性前向 |
 | 多物体但要求速度 | 先用 `source_latent` 看 `influence_heatmap`，再决定是否值得换模式重采 |
 
-注意：模式现在可以在**采样之后**切换，`record_neutral` 打开时切换模式不再重跑采样，只重算影响图。所以“多物体先用 source 试、不满意再切 fixed”几乎不额外花采样时间。
+注意：记录向下兼容。跑过 `dense_neutral` / `compare_all` 之后切到 `fixed_neutral` / `source_latent` 不重跑扩散（约 1 秒返回）；反过来从 `sparse_neutral` 收窄到更宽的中性窗口才需要重采一次。所以“多物体先用 source 看、不满意再换 fixed”最省时间。
 
-### 影响图参数（在 `KleinInfluenceMap` 上）
-
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `probe_steps` | `2` | **仅 `sparse_neutral`**：在采集窗口内均匀选几个调用做中性配对 |
-| `capture_start` | `0` | 从第几次**模型调用**开始参与比较，0 起编号。`0` 表示含第一步 |
-| `capture_end` | `-1` | 比较到第几次调用为止；`-1` 表示到结束 |
-| `common_influence` | 关 | **共同影响**。开：每次采集先各自归一化（背景中位数→0，99.5% 分位→1），再逐点取**最小值**，只保留每次都强的区域。关：平均。参与的采集就是 `capture_start`..`capture_end` 选中的调用（`sparse_neutral` 还受 `probe_steps` 限制）。开启后热图不再额外做 9px 均值模糊 |
-| `source_reference` | `auto` | 哪份 latent 算"原图"。`auto`：优先用正向条件里第一张 `ReferenceLatent`（采样时自动记录），没有时退回采样器的 `source_latent` 输入或 `latent_image`；`reference_latent`：必须用参考图，没有就报错；`source_latent_input`：始终用 `source_latent` 输入（旧行为） |
-
-### 采样器参数
+### 采样器参数（mode 与窗口决定记录内容）
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `record_neutral` | 关 | 开：每次模型调用额外跑一次中性预测并记录，供中性模式使用；关：只记录编辑预测，零额外前向 |
+| `mode` | `source_latent` | 见上表。它决定采样时要记录哪些中性预测 |
+| `capture_start` | `0` | 第几次**模型调用**开始参与比较/记录，0 起编号 |
+| `capture_end` | `-1` | 到第几次调用为止；`-1` 表示到结束 |
+| `probe_steps` | `2` | 仅 `sparse_neutral`：窗口内取几个调用做中性配对 |
 | `source_latent` | — | 无参考图条件时的原图基准。**续采的带噪 latent 必须显式提供**，并把影响图的 `source_reference` 设为 `source_latent_input` |
-| `neutral_conditioning` | — | `record_neutral` 打开时使用，接 `KleinNeutralConditioning`；旧 `clip` 入口保留兼容但会在采样器内部编码，可能抬高峰值 |
+| `neutral_conditioning` | — | 中性模式需要：接 `KleinNeutralConditioning`；旧 `clip` 入口保留兼容但会在采样器内部编码，可能抬高峰值 |
+
+### 影响图参数（纯后处理，改它不触发采样）
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `common_influence` | 关 | **共同影响**。开：每次采集先各自归一化（背景中位数→0，99.5% 分位→1），再逐点取**最小值**，只保留每次都强的区域。关：平均 |
+| `source_reference` | `auto` | 哪份 latent 算"原图"。`auto`：优先用正向条件里第一张 `ReferenceLatent`（采样时自动记录），没有时退回采样器的 `source_latent` 输入或 `latent_image`；`reference_latent`：必须用参考图，没有就报错；`source_latent_input`：始终用 `source_latent` 输入（旧行为） |
 
 ### 遮罩改为外部生成
 
@@ -248,7 +254,8 @@ source_latent → fixed_neutral → adjacent_prediction → sparse_neutral → d
 
 | 标签 | 内容 |
 |---|---|
-| `v2.0.0` | 当前版本：采样器只采样并记录，`KleinInfluenceMap` 负责出影响图；改参数不再重跑采样 |
+| `v2.0.1` | 当前版本：`mode` 与采集窗口在采样器上（记录什么必须在采样前决定），影响图节点只做纯后处理；覆盖向下兼容，跑过更全的模式后切便宜模式不再重采样 |
+| `v2.0.0` | 曾把 `mode` 放在影响图节点：切换模式很方便，但 `record_neutral` 会对每一步都记录中性预测，4 步采样前向从 5 次变成 8 次，采样时间接近翻倍。不建议使用 |
 | `legacy-single-node` | 2.0 之前的单节点版本：采样时直接算影响图/掩码，参数在采样器上，改参数会整节点重跑 |
 
 需要旧版时按标签取回即可，不影响现有安装：

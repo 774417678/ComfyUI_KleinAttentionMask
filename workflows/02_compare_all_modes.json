@@ -396,14 +396,6 @@
           "name": "neutral_conditioning",
           "type": "CONDITIONING",
           "link": 19
-        },
-        {
-          "name": "record_neutral",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "record_neutral"
-          },
-          "link": null
         }
       ],
       "outputs": [
@@ -434,7 +426,10 @@
         "Node name for S&R": "KleinMaskSamplerCustomAdvanced"
       },
       "widgets_values": [
-        true
+        "compare_all",
+        0,
+        1,
+        2
       ]
     },
     {
@@ -694,10 +689,6 @@
         "Node name for S&R": "KleinInfluenceMap"
       },
       "widgets_values": [
-        "compare_all",
-        0,
-        1,
-        2,
         false,
         "auto"
       ]

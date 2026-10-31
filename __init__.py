@@ -16,5 +16,5 @@ for _cls, _label in [
 ]:
     NODE_CLASS_MAPPINGS[_cls.__name__] = _cls
     NODE_DISPLAY_NAME_MAPPINGS[_cls.__name__] = _label
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "__version__"]

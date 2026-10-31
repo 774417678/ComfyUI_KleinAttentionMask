@@ -1,34 +1,109 @@
-"""Native sampler adapters that record per-step data for deferred influence maps.
+"""Native sampler adapters that record what the chosen mode needs.
 
-Sampling runs exactly once. Every positive model call is stored on CPU together
-with its state, so mask/mode/capture/threshold-style parameters live in the
-separate ``KleinInfluenceMap`` node and never trigger another diffusion pass.
+``mode`` lives here because *which* data must be recorded has to be decided
+before diffusion: a neutral prediction only exists while the model sits at that
+exact noisy state. Recording is exactly as expensive as the old single-node
+build of the same mode:
+
+    source_latent / adjacent_prediction   no extra forward
+    fixed_neutral                         one extra forward (call 0)
+    sparse_neutral                        probe_steps extra forwards
+    dense_neutral / compare_all           one extra forward per call in the window
+
+A finished record is cached in this module, keyed by the identities of every
+input that shaped the sampling. Re-running the node with a cheaper mode (or a
+narrower window) reuses that record and skips diffusion entirely: coverage is
+downward compatible. Changing an upstream input changes the key, so diffusion
+runs again.
 """
 import copy
 import json
 import time
+import weakref
+
 import torch
 import nodes
 import comfy.samplers
 from comfy_extras.nodes_custom_sampler import SamplerCustomAdvanced, SamplerCustom, Guider_Basic
 from comfy.model_patcher import create_model_options_clone
+
 from .neutral_conditioning import neutral_embedding, encode_neutral_conditioning
-from .sampling_record import SamplingRecord, SOURCE_REFERENCES  # noqa: F401  (SOURCE_REFERENCES re-exported)
+from .internal_sampler import MODES as MODE_ORDER
+from .sampling_record import (SamplingRecord, SOURCE_REFERENCES, NEUTRAL_MODES,  # noqa: F401
+                              required_neutral)
 
 RECORD_TYPE = 'KLEIN_SAMPLING_RECORD'
 RECORD_OUT = ('KLEIN_SAMPLING_RECORD', 'STRING')
 RECORD_NAMES = ('sampling_record', 'diagnostics')
 
+_MAX_RECORDS = 3
+_CACHE = {}
+
 
 def options():
     return {
-        'record_neutral': ('BOOLEAN', {
-            'default': False, 'label_on': '记录中性预测', 'label_off': '不记录',
-            'tooltip': 'Off: only zero-cost modes (source_latent, adjacent_prediction). On: also run one neutral forward per call and store it, so neutral modes can be applied later without resampling. Cost is one extra forward per call.'}),
+        'mode': (list(MODE_ORDER), {'default': 'source_latent'}),
+        'capture_start': ('INT', {'default': 0, 'min': 0, 'max': 10000,
+                                  'tooltip': 'First recorded model call used by the chosen mode (0 = first).'}),
+        'capture_end': ('INT', {'default': -1, 'min': -1, 'max': 10000,
+                                'tooltip': '-1 means the last call. Together with the mode this decides what gets recorded.'}),
+        'probe_steps': ('INT', {'default': 2, 'min': 1, 'max': 100,
+                                'tooltip': 'Only sparse_neutral: how many captures inside the window get a neutral pair.'}),
         'clip': ('CLIP',),
         'source_latent': ('LATENT',),
         'neutral_conditioning': ('CONDITIONING',),
     }
+
+
+def _cache_key(objects):
+    return tuple(id(o) for o in objects)
+
+
+def _ref(obj):
+    """Describe one key object: None, a weakref when possible, else a strong ref.
+
+    Lists (conditioning) are not weak-referenceable; keeping a strong reference is
+    safe here because the cache holds at most a few entries and the identity check
+    is what prevents stale reuse.
+    """
+    if obj is None:
+        return (0, None)
+    try:
+        return (1, weakref.ref(obj))
+    except TypeError:
+        return (2, obj)
+
+
+def _cache_get(key, objects):
+    entry = _CACHE.get(key)
+    if entry is None:
+        return None
+    refs, record = entry
+    if len(refs) != len(objects):
+        _CACHE.pop(key, None); return None
+    for (kind, holder), obj in zip(refs, objects):
+        if kind == 0:
+            if obj is not None:
+                _CACHE.pop(key, None); return None
+        elif kind == 1:
+            if holder() is not obj:      # an input object was replaced upstream
+                _CACHE.pop(key, None); return None
+        elif holder is not obj:
+            _CACHE.pop(key, None); return None
+    return record
+
+
+def _cache_put(key, objects, record):
+    while len(_CACHE) >= _MAX_RECORDS:
+        _CACHE.pop(next(iter(_CACHE)))
+    _CACHE[key] = ([_ref(o) for o in objects], record)
+
+
+def _upstream_objects(model, noise, sampler, sigmas, latent, source_latent, conditioning):
+    items = [model, noise, sampler, sigmas, latent['samples']]
+    items.append(None if source_latent is None else source_latent['samples'])
+    items.extend(conditioning)
+    return items
 
 
 def positive_replay_args(args, neutral):
@@ -80,7 +155,7 @@ def positive_replay_args(args, neutral):
 
 
 class Recorder:
-    """Records diffusion calls; produces a SamplingRecord, not masks."""
+    """Runs diffusion while recording exactly the calls the mode requires."""
 
     def __init__(self, model, latent, total, model_options=None, **kw):
         opts = model.model_options if model_options is None else model_options
@@ -88,8 +163,10 @@ class Recorder:
             raise ValueError('Existing model_function_wrapper is unsupported; use an unwrapped model.')
         if opts.get('sampler_calc_cond_batch_function'):
             raise ValueError('Custom conditioning executor is unsupported.')
-        # Keep scalar settings, not CLIP/LATENT objects, in metadata.
         self.kw = {k: v for k, v in kw.items() if k not in ('clip', 'source_latent', 'neutral_conditioning')}
+        self.mode = kw.get('mode', 'source_latent')
+        if self.mode not in MODE_ORDER:
+            raise ValueError('Unknown mask mode: ' + str(self.mode))
         dm = model.get_model_object('diffusion_model')
         if type(dm).__module__ != 'comfy.ldm.flux.model' or getattr(dm.params, 'context_in_dim', 0) != 12288:
             raise ValueError('Native Flux2 Klein9B required; third-party/KV engines not validated.')
@@ -98,14 +175,20 @@ class Recorder:
             raise ValueError('Only regular image latents [B,C,H,W] are supported, not nested/video latents.')
         src_origin = 'source_latent_input' if 'source_latent' in kw else 'latent_image'
         nm = latent.get('noise_mask')
+        self.capture_start = int(kw.get('capture_start', 0))
+        self.capture_end = int(kw.get('capture_end', -1))
+        self.probe_steps = int(kw.get('probe_steps', 2))
         self.record = SamplingRecord(
             src_input=model.model.process_latent_in(src.detach().cpu().clone()).float(),
             src_origin=src_origin,
             noise_mask=None if nm is None else nm.detach().cpu(),
-            total_calls=total)
-        self.record_neutral = bool(kw.get('record_neutral', False))
+            total_calls=total, mode=self.mode,
+            capture_start=self.capture_start, capture_end=self.capture_end,
+            probe_steps=self.probe_steps)
+        self.required = required_neutral(self.mode, self.capture_start, self.capture_end,
+                                         self.probe_steps, total)
         self.neutral = None; self.neutral_source = 'unused'
-        if self.record_neutral:
+        if self.required:
             neutral = kw.get('neutral_conditioning')
             if neutral is not None:
                 self.neutral = neutral_embedding(neutral)
@@ -113,7 +196,7 @@ class Recorder:
             else:
                 clip = kw.get('clip')
                 if clip is None:
-                    raise ValueError('record_neutral needs neutral_conditioning (KleinNeutralConditioning) or a CLIP input.')
+                    raise ValueError('Mode %s needs neutral predictions: connect KleinNeutralConditioning to neutral_conditioning (or a CLIP).' % self.mode)
                 self.neutral = neutral_embedding(encode_neutral_conditioning(clip))
                 self.neutral_source = 'legacy_clip'
                 print('[KleinMaskAdapter] Legacy CLIP encoding inside sampler; connect KleinNeutralConditioning to avoid repeated text-encoder loads.')
@@ -121,16 +204,12 @@ class Recorder:
         self.neutral_calls = []
         self.reference_found = False
         self.t = time.perf_counter()
-        # Clone exactly once from the cached upstream patcher. A temporary parent
-        # plus a bound-method cycle can be GC'd together; LoadedModel then loses
-        # both weakrefs even while the raw model stays cached on the GPU.
         self.patched = model.clone()
         if model_options is not None:
             self.patched.model_options = create_model_options_clone(opts)
         self.patched.set_model_unet_function_wrapper(self.wrap)
 
     def close(self):
-        """Break wrapper ownership on success, errors and cancellation (idempotent)."""
         patched = self.patched
         if patched is not None:
             wrapper = patched.model_options.get('model_function_wrapper')
@@ -148,7 +227,6 @@ class Recorder:
         return False
 
     def _capture_reference(self, args, flags, edited):
-        """Store the edit's own reference image once, in prediction coordinates."""
         if self.reference_found:
             return
         refs = args['c'].get('ref_latents')
@@ -180,17 +258,17 @@ class Recorder:
         if edited.shape != expected.shape:
             raise ValueError('Source latent and positive prediction shapes differ. Connect matching source_latent; regional conditioning is not supported.')
         neutral = None
-        if self.record_neutral:
+        if idx in self.required:
             x, t, c, chunks, pos = positive_replay_args(args, self.neutral)
             with torch.no_grad():
                 neutral = apply(x, t, **c).chunk(chunks)[pos].detach().cpu()
             del x, t, c
             self.neutral_calls.append(idx)
-        self.record.add_step(idx, float(args['timestep'].flatten()[0]),
-                             edited.detach().cpu().clone(), neutral)
+        self.record.add_step(idx, float(args['timestep'].flatten()[0]), edited.detach().cpu().clone(), neutral)
         return out
 
     def finish(self):
+        self.record.neutral_calls = sorted(self.neutral_calls)
         info = json.dumps({
             'record': self.record.describe(), 'neutral_source': self.neutral_source,
             'recorded_calls': len(self.sigmas), 'extra_neutral_forwards': len(self.neutral_calls),
@@ -200,6 +278,20 @@ class Recorder:
         }, ensure_ascii=False)
         print('[KleinMaskAdapter] ' + info)
         return self.record, info
+
+
+def _reuse(record, mode, capture_start, capture_end, probe_steps):
+    """Adopt a cheaper mode on an existing record when coverage allows it."""
+    if record is None or not record.covers(mode, capture_start, capture_end, probe_steps):
+        return None
+    record.adopt(mode, capture_start, capture_end, probe_steps)
+    info = json.dumps({
+        'record': record.describe(), 'neutral_source': 'reused_recording',
+        'recorded_calls': len(record.steps), 'extra_neutral_forwards': 0, 'neutral_calls': record.neutral_calls,
+        'reused': True, 'note': 'diffusion skipped: stored record already covers this mode',
+    }, ensure_ascii=False)
+    print('[KleinMaskAdapter] reuse ' + info)
+    return record, info
 
 
 class KleinMaskSamplerCustomAdvanced:
@@ -221,18 +313,27 @@ class KleinMaskSamplerCustomAdvanced:
             raise ValueError('Only native BasicGuider and CFGGuider supported; DualCFG/custom guiders have different branch semantics.')
         if sigmas.numel() < 2:
             raise ValueError('At least two sigma values required for a sampling record.')
+        mode = kw.get('mode', 'source_latent')
+        cs, ce, probe = int(kw.get('capture_start', 0)), int(kw.get('capture_end', -1)), int(kw.get('probe_steps', 2))
+        objects = _upstream_objects(guider.model_patcher, noise, sampler, sigmas, latent_image,
+                                    kw.get('source_latent'),
+                                    [guider, kw.get('neutral_conditioning'), kw.get('clip')])
+        key = _cache_key(objects)
+        hit = _reuse(_cache_get(key, objects), mode, cs, ce, probe)
+        if hit is not None:
+            record, info = hit
+            return (record.output, record.denoised_output, record, info)
         with Recorder(guider.model_patcher, latent_image, sigmas.numel() - 1, model_options=guider.model_options, **kw) as rec:
-            # Preserve guider-specific options, but do not create another patcher.
             g = copy.copy(guider)
             g.model_patcher = rec.patched; g.model_options = rec.patched.model_options
             g.original_conds = {k: [dict(c) for c in conds] for k, conds in guider.original_conds.items()}
             try:
                 result = SamplerCustomAdvanced.execute(noise, g, sampler, sigmas, latent_image)
+                rec.record.output, rec.record.denoised_output = result[0], result[1]
                 record, info = rec.finish()
+                _cache_put(key, objects, record)
                 return (result[0], result[1], record, info)
             finally:
-                # A traceback may keep this private guider alive after an error.
-                # Never retain the temporary patcher/conditioning through it.
                 g.__dict__.clear()
 
 
@@ -246,10 +347,21 @@ class KleinMaskKSampler:
     FUNCTION = 'sample'; CATEGORY = 'KleinMask/sampler variants'
 
     def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1., **kw):
+        mode = kw.get('mode', 'source_latent')
+        cs, ce, probe = int(kw.get('capture_start', 0)), int(kw.get('capture_end', -1)), int(kw.get('probe_steps', 2))
+        objects = [model, sampler_name, scheduler, float(cfg), int(seed), int(steps), float(denoise),
+                   latent_image['samples'], positive, negative, kw.get('neutral_conditioning'), kw.get('clip')]
+        key = _cache_key(objects)
+        hit = _reuse(_cache_get(key, objects), mode, cs, ce, probe)
+        if hit is not None:
+            record, info = hit
+            return (record.output, record, info)
         with Recorder(model, latent_image, steps, **kw) as rec:
             result = nodes.KSampler().sample(rec.patched, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise)
+            rec.record.output = result[0]
             record, info = rec.finish()
-            return (*result, record, info)
+            _cache_put(key, objects, record)
+            return (result[0], record, info)
 
 
 class KleinMaskKSamplerAdvanced:
@@ -264,12 +376,24 @@ class KleinMaskKSamplerAdvanced:
     def sample(self, model, add_noise, noise_seed, steps, cfg, sampler_name, scheduler, positive, negative,
                latent_image, start_at_step, end_at_step, return_with_leftover_noise, **kw):
         total = max(1, min(steps, end_at_step) - start_at_step)
+        mode = kw.get('mode', 'source_latent')
+        cs, ce, probe = int(kw.get('capture_start', 0)), int(kw.get('capture_end', -1)), int(kw.get('probe_steps', 2))
+        objects = [model, sampler_name, scheduler, float(cfg), int(noise_seed), int(steps), bool(add_noise),
+                   int(start_at_step), int(end_at_step), str(return_with_leftover_noise),
+                   latent_image['samples'], positive, negative, kw.get('neutral_conditioning'), kw.get('clip')]
+        key = _cache_key(objects)
+        hit = _reuse(_cache_get(key, objects), mode, cs, ce, probe)
+        if hit is not None:
+            record, info = hit
+            return (record.output, record, info)
         with Recorder(model, latent_image, total, **kw) as rec:
             result = nodes.KSamplerAdvanced().sample(rec.patched, add_noise, noise_seed, steps, cfg, sampler_name,
                                                      scheduler, positive, negative, latent_image, start_at_step,
                                                      end_at_step, return_with_leftover_noise)
+            rec.record.output = result[0]
             record, info = rec.finish()
-            return (*result, record, info)
+            _cache_put(key, objects, record)
+            return (result[0], record, info)
 
 
 class KleinMaskSamplerCustom:
@@ -286,7 +410,18 @@ class KleinMaskSamplerCustom:
     FUNCTION = 'sample'; CATEGORY = 'KleinMask/sampler variants'
 
     def sample(self, model, add_noise, noise_seed, cfg, positive, negative, sampler, sigmas, latent_image, **kw):
+        mode = kw.get('mode', 'source_latent')
+        cs, ce, probe = int(kw.get('capture_start', 0)), int(kw.get('capture_end', -1)), int(kw.get('probe_steps', 2))
+        objects = [model, add_noise, int(noise_seed), float(cfg), sampler, sigmas, latent_image['samples'],
+                   positive, negative, kw.get('neutral_conditioning'), kw.get('clip')]
+        key = _cache_key(objects)
+        hit = _reuse(_cache_get(key, objects), mode, cs, ce, probe)
+        if hit is not None:
+            record, info = hit
+            return (record.output, record.denoised_output, record, info)
         with Recorder(model, latent_image, max(1, sigmas.numel() - 1), **kw) as rec:
             result = SamplerCustom.execute(rec.patched, add_noise, noise_seed, cfg, positive, negative, sampler, sigmas, latent_image)
+            rec.record.output, rec.record.denoised_output = result[0], result[1]
             record, info = rec.finish()
+            _cache_put(key, objects, record)
             return (result[0], result[1], record, info)
