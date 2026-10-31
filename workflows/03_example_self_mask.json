@@ -54,7 +54,18 @@
         }
       },
       "widgets_values": [
-        []
+        [
+          {
+            "name": "A",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_bacgh_00033_.png&type=temp&subfolder=&rand=0.6260637833654934"
+          },
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_bacgh_00034_.png&type=temp&subfolder=&rand=0.3618238898806896"
+          }
+        ]
       ],
       "widgets_values_named": {
         "rgthree_comparer": {
@@ -974,7 +985,7 @@
       ],
       "flags": {},
       "order": 15,
-      "mode": 4,
+      "mode": 0,
       "inputs": [
         {
           "localized_name": "模型",
@@ -1022,7 +1033,7 @@
         }
       },
       "widgets_values": [
-        "klein9b/your_consistency_lora.safetensors",
+        "klein9b\\编辑一致性f2k_9B_lcs_consist_20260415.safetensors",
         1
       ],
       "widgets_values_named": {
@@ -1187,7 +1198,7 @@
         }
       },
       "widgets_values": [
-        "klein9b/your_klein_9b.safetensors",
+        "klein9b\\flux-2-klein-9b-kv-fp8.safetensors",
         "default"
       ],
       "widgets_values_named": {
@@ -2955,7 +2966,18 @@
         }
       },
       "widgets_values": [
-        []
+        [
+          {
+            "name": "A",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_hosiz_00033_.png&type=temp&subfolder=&rand=0.9294001547213143"
+          },
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_hosiz_00034_.png&type=temp&subfolder=&rand=0.49883752612507803"
+          }
+        ]
       ],
       "widgets_values_named": {
         "rgthree_comparer": {
@@ -3069,7 +3091,18 @@
         }
       },
       "widgets_values": [
-        []
+        [
+          {
+            "name": "A",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_vuvrn_00033_.png&type=temp&subfolder=&rand=0.7436207898821431"
+          },
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_vuvrn_00034_.png&type=temp&subfolder=&rand=0.9871425095408595"
+          }
+        ]
       ],
       "widgets_values_named": {
         "rgthree_comparer": {

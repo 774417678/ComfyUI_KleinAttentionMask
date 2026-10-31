@@ -65,7 +65,8 @@ SamplerCustomAdvanced(掩码版) → sampling_record → KleinInfluenceMap → i
 可直接导入 [`workflows/03_example_self_mask.json`](workflows/03_example_self_mask.json)（即原先的「klein自遮罩示例工作流」）。该示例：
 
 - `LoadImage` 指向 `example_input.png`，请先把 [`images/example_input.png`](images/example_input.png) 复制到 ComfyUI 的 `input/` 目录；
-- 模型名是占位名 `klein9b/your_klein_9b.safetensors`，请改成你自己的 Klein 9B 权重；一致性 LoRA 已置为**旁路**（占位名 `klein9b/your_consistency_lora.safetensors`），需要时右键启用并换成自己的文件；
+- 模型与 LoRA 用的是作者实际使用的文件名（`klein9b\flux-2-klein-9b-kv-fp8.safetensors`、`klein9b\编辑一致性f2k_9B_lcs_consist_20260415.safetensors`，LoRA **已启用**，强度 1）；没有对应文件时改成自己的权重，或把 LoRA 右键旁路；
+- `Image Comparer` 里保留了作者的三联对比快照，这些只是展示用的临时预览，重新运行后会被自己的结果覆盖；
 - 目标分辨率由工作流内的 `GetImageSize` + 数学节点按原图比例自动计算（默认 1024² 面积预算），不需要手填尺寸；
 - 采样器为 `fixed_neutral`、窗口 `0–1`、`probe_steps=1`，影响图开启共同影响、`source_reference=auto`；
 - 遮罩链为 `ThresholdMask → GrowMask → 高斯模糊 → ImageCompositeMasked`，与编辑结果合成后三方对比。
