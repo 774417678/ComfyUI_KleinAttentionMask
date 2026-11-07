@@ -1,9 +1,11 @@
-"""Internal prediction comparisons for native Klein9B; experimental, not TAL."""
+"""Internal prediction comparisons for native Flux2 Klein 9B and 4B; experimental, not TAL."""
 import json
 import time
 import torch
 import torch.nn.functional as F
 import nodes
+
+from .klein_support import flux2_variant
 
 MODES = ['source_latent', 'fixed_neutral', 'adjacent_prediction', 'sparse_neutral', 'dense_neutral', 'compare_all']
 METRICS = MODES[:-1]
@@ -69,8 +71,7 @@ class KleinInternalEditMaskSampler:
         if mode not in MODES: raise ValueError(mode)
         if len(positive)!=1: raise ValueError('Use one unscheduled positive conditioning.')
         dm=model.get_model_object('diffusion_model')
-        if type(dm).__module__!='comfy.ldm.flux.model' or getattr(dm.params,'context_in_dim',0)!=12288:
-            raise ValueError('Native ComfyUI Flux2 Klein9B required.')
+        flux2_variant(dm)   # native Klein 9B or 4B, fail closed otherwise
         if model.model_options.get('model_function_wrapper'): raise ValueError('An existing model wrapper is present.')
         refs=positive[0][1].get('reference_latents')
         if not refs: raise ValueError('Reference image conditioning required; connect PainterFluxImageEdit without a mask.')

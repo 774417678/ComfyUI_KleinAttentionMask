@@ -28,6 +28,7 @@ from comfy_extras.nodes_custom_sampler import SamplerCustomAdvanced, SamplerCust
 from comfy.model_patcher import create_model_options_clone
 
 from .neutral_conditioning import neutral_embedding, encode_neutral_conditioning
+from .klein_support import flux2_variant
 from .internal_sampler import MODES as MODE_ORDER
 from .sampling_record import (SamplingRecord, SOURCE_REFERENCES, NEUTRAL_MODES,  # noqa: F401
                               required_neutral)
@@ -168,8 +169,7 @@ class Recorder:
         if self.mode not in MODE_ORDER:
             raise ValueError('Unknown mask mode: ' + str(self.mode))
         dm = model.get_model_object('diffusion_model')
-        if type(dm).__module__ != 'comfy.ldm.flux.model' or getattr(dm.params, 'context_in_dim', 0) != 12288:
-            raise ValueError('Native Flux2 Klein9B required; third-party/KV engines not validated.')
+        self.context_in_dim = flux2_variant(dm)   # native Klein 9B (12288) or 4B (7680)
         src = kw.get('source_latent', latent)['samples']
         if src.is_nested or src.ndim != 4:
             raise ValueError('Only regular image latents [B,C,H,W] are supported, not nested/video latents.')

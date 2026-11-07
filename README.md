@@ -368,7 +368,7 @@ git clone --branch legacy-single-node https://github.com/774417678/ComfyUI_Klein
 ## 已知限制
 
 1. **实验性区域估计，不是精确语义分割。** 边界可能漏选或包含周边变化。批量无人值守前请先看 `influence_heatmap`。
-2. **仅支持 ComfyUI 原生 Flux2 Klein 9B。** 会显式拒绝：已有 `model_function_wrapper` 的模型、DualCFG / 未知引导器、第三方 cond 执行器、nested/video latent、形状不匹配的 source latent。
+2. **仅支持 ComfyUI 原生 Flux2 Klein（9B 与 4B）。** 两者共用同一个 Flux2 去噪器，只有文本编码器宽度不同（9B：`qwen3_8b` 4096×3 = 12288；4B：`qwen3_4b` 2560×3 = 7680），采样器、记录、影响图与区域节点都通用。会显式拒绝：非 Flux2 架构、未知的上下文宽度或潜变量通道数、已有 `model_function_wrapper` 的模型、DualCFG / 未知引导器、第三方 cond 执行器、nested/video latent、形状不匹配的 source latent。
 3. **中性重放不支持 ControlNet。** 节点会显式报错而非静默出错。
 4. **模型克隆只隔离 patch/options，不是独立模型副本。** 不宣称并发安全。
 5. **`KleinAttentionMaskProbe` / `KleinAttentionMaskExtract` 为遗留诊断节点**，使用全局状态存储，不适合批量或多个探针同时使用。
@@ -415,3 +415,16 @@ ComfyUI_KleinAttentionMask/
 ```
 
 示例图片为原创绘制的动漫风格角色，可自由使用。
+
+## 模型支持范围
+
+| 模型 | 文本编码器 | 上下文宽度 | 状态 |
+|---|---|---:|---|
+| FLUX.2 [klein] 9B | `qwen_3_8b`（4096 × 3 层） | 12288 | 已验证 |
+| FLUX.2 [klein] 4B | `qwen_3_4b`（2560 × 3 层） | 7680 | 已验证（结构检测 + CPU 测试） |
+
+4B 与 9B 共用同一个 Flux2 去噪器，只有文本编码器宽度不同：ComfyUI 对 `flux-2-klein-4b.safetensors` 的检测结果是
+`image_model=flux2`、`context_in_dim=7680`、`out_channels=128`、`num_heads=24`，本插件依赖的其余契约完全一致，
+因此采样器、采样记录、影响图、中性条件与区域节点在 4B 上同样可用。
+
+4B 的 bf16 权重约 7.2 GiB，16 GB 显存可以直接跑全精度，中性预测这类额外前向的代价也更低。

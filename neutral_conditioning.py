@@ -1,4 +1,4 @@
-"""Fail-closed neutral text preparation for native Flux2 Klein9B (ComfyUI 0.42.3).
+"""Fail-closed neutral text preparation for native Flux2 Klein 9B and 4B (ComfyUI 0.42.3).
 
 Integration::
 
@@ -29,11 +29,15 @@ import torch
 import torch.nn.functional as F
 
 NEUTRAL_PROMPT = "Keep the image unchanged."
-_CONTEXT_DIM = 12288
+# Cross-attention widths of the supported native Flux2 Klein text encoders:
+#   Klein 9B -> qwen3_8b, hidden 4096 x 3 tapped layers
+#   Klein 4B -> qwen3_4b, hidden 2560 x 3 tapped layers
+CONTEXT_DIMS = (12288, 7680)
 _MIN_TOKENS = 512
 _ALLOWED_METADATA = frozenset(("pooled_output", "attention_mask"))
 
 __all__ = [
+    "CONTEXT_DIMS",
     "NEUTRAL_PROMPT",
     "KleinNeutralConditioning",
     "encode_neutral_conditioning",
@@ -81,8 +85,10 @@ def _normalized_conditioning(conditioning):
         raise _error("pooled_output must be None for vanilla Klein/Qwen3; a non-None pooled output cannot be silently discarded.")
 
     embedding = _regular_cpu_tensor(embedding, "embedding")
-    if embedding.ndim != 3 or embedding.shape[0] != 1 or embedding.shape[2] != _CONTEXT_DIM or embedding.shape[1] < 1:
-        raise _error("embedding must have shape [1,T,12288] with T >= 1 (native Klein9B, not Klein4B or a batched context).")
+    if embedding.ndim != 3 or embedding.shape[0] != 1 or embedding.shape[2] not in CONTEXT_DIMS or embedding.shape[1] < 1:
+        raise _error("embedding must have shape [1,T,D] with T >= 1 and D one of %s "
+                     "(12288 = native Klein 9B, 7680 = native Klein 4B), not a batched context."
+                     % (list(CONTEXT_DIMS),))
     if not embedding.is_floating_point():
         raise _error("embedding must have a floating-point dtype, not integer/bool/complex.")
     tokens = embedding.shape[1]
@@ -113,7 +119,9 @@ def _normalized_conditioning(conditioning):
 
 
 def neutral_embedding(conditioning) -> torch.Tensor:
-    """Return detached CPU floating [1,T,12288], left-zero-padded to T>=512.
+    """Return detached CPU floating [1,T,D], left-zero-padded to T>=512.
+
+    D is the model's context width: 12288 for Klein 9B, 7680 for Klein 4B.
 
     Accept exactly one complete vanilla CONDITIONING. Validate metadata even
     though this tensor-only consumer does not return it; never pick the first
@@ -173,7 +181,7 @@ class KleinNeutralConditioning:
     RETURN_NAMES = ("neutral_conditioning",)
     FUNCTION = "encode"
     CATEGORY = "KleinMask/experimental"
-    DESCRIPTION = "Prepare cached vanilla Klein9B neutral text before sampling: Keep the image unchanged."
+    DESCRIPTION = "Prepare cached vanilla Klein neutral text before sampling (9B and 4B): Keep the image unchanged."
 
     def encode(self, clip):
         # Release only this encoder's GPU residency after its output is copied

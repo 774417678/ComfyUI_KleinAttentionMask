@@ -295,5 +295,33 @@ class MemoryLifecycle(unittest.TestCase):
     def test_rms_matches_math(self):
         a=torch.randn(2,4,3,5);b=torch.randn_like(a)
         self.assertTrue(torch.equal(internal.rms(a,b),((a-b).square().mean(1).sqrt())))
+    def test_klein4b_context_width_accepted(self):
+        # Klein 4B: qwen3_4b, 2560 hidden x 3 tapped layers = 7680
+        raw=FakeRaw();raw.diffusion_model.params=types.SimpleNamespace(context_in_dim=7680)
+        model=FakePatcher(raw);guider=FakeCFG(model)
+        def execute(noise,g,sampler,sigmas,latent):
+            g.model_patcher.model_options['model_function_wrapper'](lambda x,t,**c:x,{'input':latent['samples'],'timestep':torch.ones(1),'c':{'c_crossattn':torch.zeros(1,512,7680),'transformer_options':{}},'cond_or_uncond':[0]})
+            return latent,latent
+        mod._CACHE.clear()
+        with patch.object(mod.SamplerCustomAdvanced,'execute',execute):
+            out=mod.KleinMaskSamplerCustomAdvanced().sample(None,guider,None,torch.tensor([1.,.5,0.]),self.latent,mode='source_latent')
+        self.assertEqual(out[2].describe()['mode'],'source_latent')
+        neutral4b=[[torch.ones(1,7,7680),{}]]
+        rec=mod.Recorder(model,self.latent,2,mode='fixed_neutral',neutral_conditioning=neutral4b)
+        self.assertEqual(rec.context_in_dim,7680)
+        self.assertEqual(rec.required,{0})
+        self.assertEqual(tuple(rec.neutral.shape),(1,512,7680));rec.close()   # left-padded to 512
+    def test_unknown_variant_fails_closed(self):
+        for dim in (0,4096,12288*2):
+            raw=FakeRaw();raw.diffusion_model.params=types.SimpleNamespace(context_in_dim=dim)
+            with self.assertRaises(ValueError):mod.Recorder(FakePatcher(raw),self.latent,2)
+        other=type('Other',(),{'__module__':'some.third_party'});raw=FakeRaw();raw.diffusion_model=other()
+        raw.diffusion_model.params=types.SimpleNamespace(context_in_dim=12288)
+        with self.assertRaises(ValueError):mod.Recorder(FakePatcher(raw),self.latent,2)
+    def test_variant_lookup(self):
+        import klein_under_test.klein_support as support
+        self.assertEqual(support.variant_name(12288),'Klein 9B')
+        self.assertEqual(support.variant_name(7680),'Klein 4B')
+        self.assertEqual(support.CONTEXT_DIMS,(12288,7680))
 
 if __name__=='__main__':unittest.main(verbosity=2)

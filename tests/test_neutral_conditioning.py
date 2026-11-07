@@ -129,10 +129,16 @@ class NeutralEmbeddingTests(CpuOnlyTestCase):
                     neutral.neutral_embedding(source)
 
     def test_shape_mismatch_rejected(self):
-        for shape in ((1, 12288), (2, 1, 12288), (1, 0, 12288), (1, 1, 7680), (1, 1, 12289), (1, 1, 1, 12288)):
+        for shape in ((1, 12288), (2, 1, 12288), (1, 0, 12288), (1, 1, 12289), (1, 1, 1, 12288), (1, 1, 2560)):
             with self.subTest(shape=shape):
-                with self.assertRaisesRegex(ValueError, r"\[1,T,12288\]"):
+                with self.assertRaisesRegex(ValueError, r"\[1,T,D\]"):
                     neutral.neutral_embedding([[torch.zeros(shape, device="cpu"), {}]])
+
+    def test_klein4b_context_width_accepted(self):
+        # Klein 4B: qwen3_4b, 2560 hidden x 3 tapped layers = 7680
+        result = neutral.neutral_embedding([[torch.zeros((1, 9, 7680), device="cpu"), {}]])
+        self.assertEqual(tuple(result.shape), (1, 512, 7680))
+        self.assertEqual(neutral.CONTEXT_DIMS, (12288, 7680))
 
     def test_integer_bool_complex_and_non_tensor_embedding_rejected(self):
         for dtype in (torch.int64, torch.bool, torch.complex64):
